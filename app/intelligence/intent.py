@@ -16,6 +16,11 @@ class IntentType(str, Enum):
     NAVIGATE = "NAVIGATE"
     SEARCH = "SEARCH"
     TYPE_TEXT = "TYPE_TEXT"
+    CLICK = "CLICK"
+    PRESS_KEY = "PRESS_KEY"
+    NEW_TAB = "NEW_TAB"
+    CLOSE_TAB = "CLOSE_TAB"
+    INCOGNITO = "INCOGNITO"
     INTERRUPT = "INTERRUPT"
 
 

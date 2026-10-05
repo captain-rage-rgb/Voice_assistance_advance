@@ -161,6 +161,79 @@ class IncrementalIntentDetector:
                 is_complete=True,
             )
 
+        # Check incognito mode
+        if "incognito" in lower:
+            return _SegmentCandidate(
+                intent_type=IntentType.INCOGNITO,
+                parameters={"action": "open_incognito"},
+                source_text=clause,
+                confidence=0.98,
+                is_complete=True,
+            )
+
+        # Check tab management
+        if any(ph in lower for ph in ("new tab", "create a new tab", "open a new tab", "open new tab")):
+            return _SegmentCandidate(
+                intent_type=IntentType.NEW_TAB,
+                parameters={},
+                source_text=clause,
+                confidence=0.95,
+                is_complete=True,
+            )
+
+        if any(ph in lower for ph in ("close tab", "close this tab")):
+            return _SegmentCandidate(
+                intent_type=IntentType.CLOSE_TAB,
+                parameters={},
+                source_text=clause,
+                confidence=0.95,
+                is_complete=True,
+            )
+
+        # Pattern: CLICK / CHOOSE / SELECT
+        click_verbs = ("click", "choose", "select", "pick")
+        if words and words[0] in click_verbs:
+            target_words = words[1:]
+            if target_words and target_words[0] in ("on", "at", "the", "option"):
+                target_words = target_words[1:]
+            target_raw = " ".join(target_words).strip(" ,.;:?")
+            for lead in ("the ", "my ", "an ", "a "):
+                if target_raw.lower().startswith(lead):
+                    target_raw = target_raw[len(lead):]
+            if target_raw:
+                return _SegmentCandidate(
+                    intent_type=IntentType.CLICK,
+                    parameters={"target": target_raw},
+                    source_text=clause,
+                    confidence=0.90,
+                    is_complete=True,
+                )
+
+        # Pattern: PRESS_KEY ("press enter", "press tab", "hit enter")
+        if words and words[0] in ("press", "hit"):
+            key_words = words[1:]
+            key_raw = " ".join(key_words).strip(" ,.;:?").lower()
+            if key_raw in ("enter", "return", "tab", "esc", "escape", "space", "backspace", "up", "down", "left", "right"):
+                return _SegmentCandidate(
+                    intent_type=IntentType.PRESS_KEY,
+                    parameters={"key": key_raw},
+                    source_text=clause,
+                    confidence=0.95,
+                    is_complete=True,
+                )
+            elif key_raw:
+                target_cand = key_raw
+                for lead in ("the ", "option ", "box "):
+                    if target_cand.startswith(lead):
+                        target_cand = target_cand[len(lead):]
+                return _SegmentCandidate(
+                    intent_type=IntentType.CLICK,
+                    parameters={"target": target_cand},
+                    source_text=clause,
+                    confidence=0.85,
+                    is_complete=True,
+                )
+
         # 1. Pattern: OPEN_APPLICATION ("open <app>", "launch <app>", "start <app>")
         if words and words[0] in {"open", "launch", "start"}:
             if len(words) == 1:

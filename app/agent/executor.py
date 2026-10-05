@@ -113,11 +113,73 @@ class SystemActionExecutor:
             key = (args.get("key") or "").strip()
             result = await self._press_key(key, token)
 
+        # 6. Incognito Mode
+        elif action_type in ("incognito", "open_incognito"):
+            result = await self._open_incognito(token)
+
+        # 7. New Tab
+        elif action_type in ("new_tab", "create_tab"):
+            result = await self._new_tab(token)
+
+        # 8. Close Tab
+        elif action_type in ("close_tab",):
+            result = await self._close_tab(token)
+
+        # 9. Click / Select
+        elif action_type in ("click", "choose", "select"):
+            target = (args.get("target") or args.get("element_id") or "").strip()
+            result = await self._click(target, token)
+
         else:
             result = f"Executed generic action '{action.action_type}'"
 
         self.executed_actions.append(action)
         return result
+
+    async def _open_incognito(self, token: Optional[CancellationToken]) -> str:
+        self.logger.info("SYSTEM EXECUTOR: Launching Chrome in Incognito mode")
+        proc = await asyncio.create_subprocess_exec(
+            "cmd", "/c", "start", "chrome", "--incognito",
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        await proc.wait()
+        return "Opened Chrome in Incognito mode"
+
+    async def _new_tab(self, token: Optional[CancellationToken]) -> str:
+        self.logger.info("SYSTEM EXECUTOR: Creating new browser tab (Ctrl+T)")
+        ps_cmd = "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('^t')"
+        proc = await asyncio.create_subprocess_exec(
+            "powershell", "-NoProfile", "-Command", ps_cmd,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        await proc.wait()
+        return "Created new browser tab"
+
+    async def _close_tab(self, token: Optional[CancellationToken]) -> str:
+        self.logger.info("SYSTEM EXECUTOR: Closing active browser tab (Ctrl+W)")
+        ps_cmd = "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('^w')"
+        proc = await asyncio.create_subprocess_exec(
+            "powershell", "-NoProfile", "-Command", ps_cmd,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        await proc.wait()
+        return "Closed active browser tab"
+
+    async def _click(self, target: str, token: Optional[CancellationToken]) -> str:
+        self.logger.info("SYSTEM EXECUTOR: Selecting/clicking target: %s", target)
+        if "incognito" in target.lower():
+            return await self._open_incognito(token)
+        ps_cmd = "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('{ENTER}')"
+        proc = await asyncio.create_subprocess_exec(
+            "powershell", "-NoProfile", "-Command", ps_cmd,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        await proc.wait()
+        return f"Selected '{target}'"
 
     async def _open_application(self, app_name: str, token: Optional[CancellationToken]) -> str:
         app_lower = app_name.lower().strip()

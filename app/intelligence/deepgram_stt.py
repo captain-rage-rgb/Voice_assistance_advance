@@ -65,6 +65,7 @@ class DeepgramStreamingSTT:
             "interim_results=true",
             f"endpointing={self.endpointing_ms}",
             "punctuate=true",
+            "smart_format=true",
         ]
         return f"{self.BASE_URL}?{'&'.join(query_params)}"
 
