@@ -170,8 +170,27 @@ class SystemActionExecutor:
 
     async def _click(self, target: str, token: Optional[CancellationToken]) -> str:
         self.logger.info("SYSTEM EXECUTOR: Selecting/clicking target: %s", target)
-        if "incognito" in target.lower():
+        target_lower = target.lower()
+        if "incognito" in target_lower:
             return await self._open_incognito(token)
+
+        # First link / search result in active browser:
+        if any(term in target_lower for term in ("first link", "first result", "top link", "top result")):
+            self.logger.info("SYSTEM EXECUTOR: Navigating to first link/result (Tab + Enter)")
+            ps_cmd = (
+                "Add-Type -AssemblyName System.Windows.Forms; "
+                "[System.Windows.Forms.SendKeys]::SendWait('{TAB}'); "
+                "Start-Sleep -Milliseconds 150; "
+                "[System.Windows.Forms.SendKeys]::SendWait('{ENTER}')"
+            )
+            proc = await asyncio.create_subprocess_exec(
+                "powershell", "-NoProfile", "-Command", ps_cmd,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            await proc.wait()
+            return "Opened first link/result"
+
         ps_cmd = "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('{ENTER}')"
         proc = await asyncio.create_subprocess_exec(
             "powershell", "-NoProfile", "-Command", ps_cmd,
@@ -186,6 +205,15 @@ class SystemActionExecutor:
         for art in ("the ", "my ", "a "):
             if app_lower.startswith(art):
                 app_lower = app_lower[len(art):]
+
+        # Safety: If user meant a UI element or link (e.g. "first link which appear on the chrome")
+        if any(term in app_lower for term in ("link", "result", "option", "button", "item")):
+            return await self._click(app_name, token)
+
+        # Safety: If user meant a popular website (e.g. "YouTube", "GitHub", "Google")
+        known_websites = {"youtube", "google", "github", "reddit", "twitter", "x", "gmail", "facebook", "netflix", "amazon"}
+        if app_lower in known_websites or "youtube" in app_lower:
+            return await self._navigate(app_name, token)
 
         cmd_map = {
             "chrome": ["cmd", "/c", "start", "chrome"],
@@ -205,7 +233,14 @@ class SystemActionExecutor:
             "spotify": ["cmd", "/c", "start", "spotify:"],
         }
 
-        cmd = cmd_map.get(app_lower, ["cmd", "/c", "start", app_lower])
+        if app_lower in cmd_map:
+            cmd = cmd_map[app_lower]
+        elif len(app_lower.split()) == 1 and app_lower.isalnum():
+            cmd = ["cmd", "/c", "start", app_lower]
+        else:
+            self.logger.warning("SYSTEM EXECUTOR: Unknown application '%s', performing web search instead", app_name)
+            return await self._search(app_name, token)
+
         self.logger.info("SYSTEM EXECUTOR: Launching app '%s' with command %s", app_name, cmd)
 
         try:

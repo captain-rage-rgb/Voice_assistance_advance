@@ -151,6 +151,17 @@ class IncrementalIntentDetector:
                 words = lower.split()
                 break
 
+        # Strip common context prefixes (e.g. "in the chrome", "in chrome", "on chrome", "so here ")
+        for ctx_pref in (
+            "in the chrome ", "in chrome ", "on the chrome ", "on chrome ",
+            "in the browser ", "in browser ", "on the browser ", "on browser ",
+            "so here ", "here "
+        ):
+            if lower.startswith(ctx_pref):
+                lower = lower[len(ctx_pref):].strip()
+                words = lower.split()
+                break
+
         # Check for interruption keywords ("stop", "cancel", "actually stop")
         if lower in {"stop", "cancel", "wait", "hold on"} or lower.startswith("actually stop"):
             return _SegmentCandidate(
@@ -234,7 +245,7 @@ class IncrementalIntentDetector:
                     is_complete=True,
                 )
 
-        # 1. Pattern: OPEN_APPLICATION ("open <app>", "launch <app>", "start <app>")
+        # 1. Pattern: OPEN_APPLICATION / NAVIGATE / CLICK
         if words and words[0] in {"open", "launch", "start"}:
             if len(words) == 1:
                 # Incomplete: "open"
@@ -244,6 +255,32 @@ class IncrementalIntentDetector:
             # Filter incomplete trailing words if in partial mode (e.g. "open the")
             if allow_partial and app_raw in self.INCOMPLETE_TRAILERS:
                 return _SegmentCandidate(IntentType.OPEN_APPLICATION, {}, clause, 0.4, is_complete=False)
+
+            app_lower_check = app_raw.lower()
+            for lead in ("the ", "my ", "a ", "an "):
+                if app_lower_check.startswith(lead):
+                    app_lower_check = app_lower_check[len(lead):]
+
+            # Route UI links/results/options to CLICK
+            if any(term in app_lower_check for term in ("link", "result", "option", "video", "button", "item")):
+                return _SegmentCandidate(
+                    intent_type=IntentType.CLICK,
+                    parameters={"target": app_raw},
+                    source_text=clause,
+                    confidence=0.92,
+                    is_complete=True,
+                )
+
+            # Route websites like YouTube/Google/GitHub to NAVIGATE
+            known_websites = {"youtube", "google", "github", "reddit", "twitter", "x", "gmail", "facebook", "netflix", "amazon"}
+            if app_lower_check in known_websites or "youtube" in app_lower_check:
+                return _SegmentCandidate(
+                    intent_type=IntentType.NAVIGATE,
+                    parameters={"destination": app_lower_check.title()},
+                    source_text=clause,
+                    confidence=0.95,
+                    is_complete=True,
+                )
 
             canonical_app = self._canonicalize_app_name(app_raw)
             is_complete = bool(canonical_app and canonical_app.strip())
