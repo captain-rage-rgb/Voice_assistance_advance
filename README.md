@@ -26,15 +26,13 @@ Instead of recording a complete turn, stopping, running speech-to-text, querying
 
 ## Current Status
 
-**Phase 4 — Streaming Speech-to-Text (Complete)**
+**Phase 5 — Incremental Intent Detection (Complete)**
 
-The streaming speech recognition layer is implemented and integrated with the audio pipeline:
-* **Transcript Model (`app/intelligence/transcript.py`)**: Immutable `Transcript` representation distinguishing interim partial hypotheses from finalized segments, with confidence, latency, segment ID, and text normalization.
-* **Streaming STT Protocol (`app/intelligence/stt_interface.py`)**: Provider-agnostic `StreamingSTT` protocol defining `connect()`, `send_audio()`, `receive_transcripts()`, and `disconnect()`.
-* **Deepgram Streaming Provider (`app/intelligence/deepgram_stt.py`)**: Low-latency WebSocket integration streaming 16-bit linear PCM and parsing real-time partial/final transcripts.
-* **Mock STT Provider (`app/intelligence/mock_stt.py`)**: Scriptable test provider supporting synthetic partial streams, revisions, and finalizations without hitting external networks or paid APIs.
-* **STT Manager (`app/intelligence/stt_manager.py`)**: Asynchronous coordinator consuming audio from `pipeline.audio_queue`, sending chunks to the provider, suppressing duplicate partials, tracking latency, updating state, and publishing `TRANSCRIPT_PARTIAL`, `TRANSCRIPT_FINAL`, and `STT_ERROR` events.
-* **Live STT Demonstration (`app/intelligence/demo.py`)**: Runnable CLI scenario validating live microphone capture, real-time transcript streaming, duplicate suppression, and clean shutdown.
+The incremental intent detection layer is implemented and connected to streaming speech transcripts:
+* **Structured Intent Model (`app/intelligence/intent.py`)**: Immutable `Intent` model with generic `IntentType` (`OPEN_APPLICATION`, `NAVIGATE`, `SEARCH`, `TYPE_TEXT`, `INTERRUPT`), structured parameters, source text, and confidence scores.
+* **Incremental Intent Detector (`app/intelligence/intent_detector.py`)**: Rule-based, low-latency parser that segments continuous speech along natural boundaries (`and`, `then`, `next`, `after that`), handles partial revisions, differentiates incomplete trailing clauses from actionable intents, and suppresses duplicate emissions.
+* **STT to Intent Integration (`app/intelligence/stt_manager.py`)**: Emits `INTENT_DETECTED` events as soon as a complete intent emerges from partial transcripts while speech is ongoing.
+* **Non-Executing Guarantee**: Intents represent structured meaning only—no operating system automation or real computer tools are invoked.
 
 ---
 

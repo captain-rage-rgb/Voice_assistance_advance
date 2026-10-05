@@ -11,6 +11,7 @@ from app.agent.events import Event, EventBus, EventType
 from app.audio.chunk import AudioChunk
 from app.config import Settings, settings
 from app.intelligence.deepgram_stt import DeepgramStreamingSTT
+from app.intelligence.intent_detector import IncrementalIntentDetector
 from app.intelligence.stt_interface import StreamingSTT
 from app.intelligence.transcript import Transcript
 from app.state.state_manager import StateManager
@@ -20,7 +21,8 @@ class STTManager:
     """
     Coordinates streaming audio feeding to an STT provider and receives partial/final transcripts.
     Suppresses consecutive duplicate partials, tracks revisions, measures latencies,
-    and publishes TRANSCRIPT_PARTIAL / TRANSCRIPT_FINAL events into the EventBus.
+    evaluates incremental intent detection, and publishes TRANSCRIPT_PARTIAL, TRANSCRIPT_FINAL,
+    and INTENT_DETECTED events into the EventBus.
     """
 
     def __init__(
@@ -29,6 +31,7 @@ class STTManager:
         stt_provider: Optional[StreamingSTT] = None,
         event_bus: Optional[EventBus] = None,
         state_manager: Optional[StateManager] = None,
+        intent_detector: Optional[IncrementalIntentDetector] = None,
         config: Optional[Settings] = None,
         logger: Optional[logging.Logger] = None,
     ) -> None:
@@ -37,6 +40,7 @@ class STTManager:
         self.event_bus = event_bus or EventBus()
         self.state_manager = state_manager or StateManager()
         self.logger = logger or logging.getLogger("voice_agent.intelligence.stt")
+        self.intent_detector = intent_detector or IncrementalIntentDetector(logger=self.logger)
 
         # Provider initialization
         if stt_provider is not None:
@@ -199,6 +203,20 @@ class STTManager:
                                 },
                             )
                         )
+                        # Check for intent completion on final transcript
+                        new_intents = self.intent_detector.process_transcript(text, is_final=True)
+                        for intent in new_intents:
+                            await self.event_bus.publish(
+                                Event(
+                                    EventType.INTENT_DETECTED,
+                                    {
+                                        "intent": intent.intent_type.value,
+                                        "arguments": intent.parameters,
+                                        "source_text": intent.source_text,
+                                        "confidence": intent.confidence,
+                                    },
+                                )
+                            )
                     else:
                         # Partial transcript received - filter consecutive identical duplicates
                         if text == self._last_partial_text:
@@ -222,6 +240,20 @@ class STTManager:
                                 },
                             )
                         )
+                        # Incrementally check for completed sub-intents while still speaking
+                        new_intents = self.intent_detector.process_transcript(text, is_final=False)
+                        for intent in new_intents:
+                            await self.event_bus.publish(
+                                Event(
+                                    EventType.INTENT_DETECTED,
+                                    {
+                                        "intent": intent.intent_type.value,
+                                        "arguments": intent.parameters,
+                                        "source_text": intent.source_text,
+                                        "confidence": intent.confidence,
+                                    },
+                                )
+                            )
 
             except asyncio.CancelledError:
                 break
