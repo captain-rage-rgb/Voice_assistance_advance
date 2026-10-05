@@ -711,7 +711,12 @@ class AgentRuntime:
         self.state_manager.set_pending_count(self.action_queue.pending_count)
 
         self.logger.info("ACTION STARTED: %s (ID: %s, Run: %s)", action.action_type, action.action_id, action.run_id)
-        await self.event_bus.publish(Event(EventType.ACTION_STARTED, {"action_id": action.action_id, "run_id": action.run_id}))
+        await self.event_bus.publish(
+            Event(
+                EventType.ACTION_STARTED,
+                {"action_id": action.action_id, "action_type": action.action_type, "run_id": action.run_id},
+            )
+        )
 
         obs_before = Observation(observation_type="system_state", data={"action": action.action_type}, run_id=action.run_id)
         context.record_observation(obs_before)

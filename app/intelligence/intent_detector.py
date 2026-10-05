@@ -140,6 +140,17 @@ class IncrementalIntentDetector:
         if not words:
             return None
 
+        # Strip common conversational politeness prefixes
+        for prefix in (
+            "can you please ", "could you please ", "would you please ",
+            "can you ", "could you ", "would you ", "please ",
+            "i want you to ", "i want to ", "help me ", "let's "
+        ):
+            if lower.startswith(prefix):
+                lower = lower[len(prefix):].strip()
+                words = lower.split()
+                break
+
         # Check for interruption keywords ("stop", "cancel", "actually stop")
         if lower in {"stop", "cancel", "wait", "hold on"} or lower.startswith("actually stop"):
             return _SegmentCandidate(
@@ -151,7 +162,7 @@ class IncrementalIntentDetector:
             )
 
         # 1. Pattern: OPEN_APPLICATION ("open <app>", "launch <app>", "start <app>")
-        if words[0] in {"open", "launch", "start"}:
+        if words and words[0] in {"open", "launch", "start"}:
             if len(words) == 1:
                 # Incomplete: "open"
                 return _SegmentCandidate(IntentType.OPEN_APPLICATION, {}, clause, 0.3, is_complete=False)
@@ -162,8 +173,6 @@ class IncrementalIntentDetector:
                 return _SegmentCandidate(IntentType.OPEN_APPLICATION, {}, clause, 0.4, is_complete=False)
 
             canonical_app = self._canonicalize_app_name(app_raw)
-            # Avoid emitting incomplete fragment revisions like "fire" when "firefox" might be intended,
-            # but if it matches a known app or is clearly a distinct title, mark complete.
             is_complete = bool(canonical_app and canonical_app.strip())
             return _SegmentCandidate(
                 intent_type=IntentType.OPEN_APPLICATION,
@@ -173,14 +182,17 @@ class IncrementalIntentDetector:
                 is_complete=is_complete,
             )
 
-        # 2. Pattern: NAVIGATE ("go to <destination>", "navigate to <destination>")
-        if lower.startswith("go to ") or lower.startswith("navigate to "):
-            prefix_len = 2 if lower.startswith("go to ") else 2
-            dest_words = words[prefix_len:]
-            if not dest_words:
+        # 2. Pattern: NAVIGATE ("go to <destination>", "navigate to <destination>", "go into <destination>")
+        nav_prefixes = ("go to ", "navigate to ", "go into ")
+        matched_nav = next((p for p in nav_prefixes if lower.startswith(p)), None)
+        if matched_nav:
+            dest_raw = lower[len(matched_nav):].strip(" ,.;:?")
+            for lead in ("the ", "my "):
+                if dest_raw.startswith(lead):
+                    dest_raw = dest_raw[len(lead):].strip()
+            if not dest_raw:
                 return _SegmentCandidate(IntentType.NAVIGATE, {}, clause, 0.3, is_complete=False)
 
-            dest_raw = " ".join(dest_words).strip(" ,.;:")
             if allow_partial and dest_raw in self.INCOMPLETE_TRAILERS:
                 return _SegmentCandidate(IntentType.NAVIGATE, {}, clause, 0.4, is_complete=False)
 
@@ -231,10 +243,13 @@ class IncrementalIntentDetector:
     def _canonicalize_app_name(self, raw_app: str) -> str:
         """Resolve app string to canonical title case or known application name."""
         clean = raw_app.strip(" ,.;:!?").lower()
+        for lead in ("the ", "my ", "a "):
+            if clean.startswith(lead):
+                clean = clean[len(lead):].strip()
         if clean in self.KNOWN_APPS:
             return self.KNOWN_APPS[clean]
         # Return properly title-cased string for generic apps (e.g. "Blender", "Slack")
-        return raw_app.strip().title()
+        return clean.strip().title()
 
     @staticmethod
     def _intent_signature(intent_type: IntentType, parameters: dict) -> str:

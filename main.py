@@ -34,7 +34,7 @@ if os.path.isfile(_venv_python) and os.path.normcase(sys.executable) != os.path.
 
 from app.agent.action import Action
 from app.agent.events import Event, EventBus, EventType
-from app.agent.executor import MockExecutor
+from app.agent.executor import MockExecutor, SystemActionExecutor
 from app.agent.overlay import FloatingOverlay, OverlayDisplayState
 from app.agent.runtime import AgentRuntime
 from app.agent.visual import ComputerObservation, UIElement
@@ -68,7 +68,8 @@ async def run_interactive() -> None:
 
     event_bus = EventBus()
     state_manager = StateManager()
-    runtime = AgentRuntime(event_bus=event_bus, state_manager=state_manager)
+    executor = SystemActionExecutor(logger=logger)
+    runtime = AgentRuntime(event_bus=event_bus, state_manager=state_manager, executor=executor)
     overlay = FloatingOverlay(runtime=runtime, event_bus=event_bus)
     intent_detector = IncrementalIntentDetector(logger=logger)
 

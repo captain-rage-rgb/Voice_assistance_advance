@@ -7,7 +7,7 @@ from app.agent.action_queue import ActionQueue
 from app.agent.cancellation import CancellationToken
 from app.agent.context import ActionResult, ExecutionOutcome, Observation, TaskContext, TaskMilestone
 from app.agent.events import Event, EventBus, EventHandler, EventType
-from app.agent.executor import ActionExecutor, MockExecutor
+from app.agent.executor import ActionExecutor, MockExecutor, SystemActionExecutor
 from app.agent.health import HealthMonitor, SubsystemHealth, SubsystemStatus
 from app.agent.orchestration import (
     ConfirmationManager,
@@ -63,6 +63,7 @@ __all__ = [
     "EventType",
     "ActionExecutor",
     "MockExecutor",
+    "SystemActionExecutor",
     "FloatingOverlay",
     "OverlayDisplayState",
     "AgentRuntime",
