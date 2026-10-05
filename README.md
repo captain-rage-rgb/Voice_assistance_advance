@@ -26,15 +26,15 @@ Instead of recording a complete turn, stopping, running speech-to-text, querying
 
 ## Current Status
 
-**Phase 2 — Core Agent Runtime (Complete)**
+**Phase 3 — Microphone and Audio Pipeline (Complete)**
 
-The asynchronous agent runtime foundation is implemented:
-* **Event System (`app/agent/events.py`)**: Asynchronous publish-subscribe `EventBus` and generic immutable `Event` models.
-* **Action & Queue Model (`app/agent/action.py`, `app/agent/action_queue.py`)**: Structured `Action` representations and priority-ordered, inspectable, cancellable `ActionQueue`.
-* **State Management (`app/state/state_manager.py`)**: `StateManager` tracking lifecycle, current action, pending action counts, cancellation flags, and error states.
-* **Executor Interface & Mock (`app/agent/executor.py`)**: Decoupled `ActionExecutor` protocol with a `MockExecutor` simulating async delays, successes, and failures without touching actual OS automation.
-* **Core Agent Runtime (`app/agent/runtime.py`)**: Async orchestrator managing event dispatch, action queuing, cooperative in-flight task cancellation, and graceful shutdown.
-* **Demonstration Scenario (`app/agent/demo.py`)**: Runnable end-to-end simulation covering intent conversion, queueing, execution, interruption, and shutdown.
+The streaming audio capture and voice activity detection pipeline is implemented:
+* **Audio Chunk Model (`app/audio/chunk.py`)**: Immutable `AudioChunk` representation capturing raw 16-bit linear PCM with metadata (sample rate, channels, duration, sample count, and timestamp).
+* **Microphone Capture Abstraction (`app/audio/capture.py`)**: Non-blocking continuous audio capture using `sounddevice` (PortAudio). Forwards audio callbacks thread-safely into an `asyncio.Queue`.
+* **Voice Activity Detection & Endpointing (`app/audio/vad.py`)**: Lightweight, robust VAD powered by `webrtcvad`. Configurable aggressiveness, speech onset threshold, and endpointing silence frames (distinguishing short breath pauses from utterance completion).
+* **Audio Pipeline Coordinator (`app/audio/pipeline.py`)**: Asynchronous coordinator managing bounded chunk queuing, VAD consumer loop, graceful shutdown, and publishing `AUDIO_STREAM_STARTED`, `AUDIO_STREAM_STOPPED`, `VOICE_ACTIVITY_STARTED`, `VOICE_ACTIVITY_STOPPED`, and `AUDIO_ERROR` events.
+* **State & Event Integration**: State manager tracks `microphone_active`, `voice_activity_active`, and `audio_error`.
+* **Live Audio Demonstration (`app/audio/demo.py`)**: Runnable CLI script demonstrating live microphone streaming, voice activity detection, and clean shutdown.
 
 ---
 

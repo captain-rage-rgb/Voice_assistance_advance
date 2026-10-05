@@ -30,6 +30,11 @@ class AgentState:
     cancellation_requested: bool = False
     last_error: Optional[str] = None
 
+    # Audio & Voice Activity state
+    microphone_active: bool = False
+    voice_activity_active: bool = False
+    audio_error: Optional[str] = None
+
 
 class StateManager:
     """Manages agent state transitions and query operations."""
@@ -66,6 +71,20 @@ class StateManager:
     def record_error(self, error: str) -> None:
         """Record the latest error message."""
         self._state.last_error = error
+
+    def set_microphone_active(self, active: bool) -> None:
+        """Update microphone streaming state."""
+        self._state.microphone_active = active
+        if not active:
+            self._state.voice_activity_active = False
+
+    def set_voice_activity_active(self, active: bool) -> None:
+        """Update voice activity state."""
+        self._state.voice_activity_active = active
+
+    def set_audio_error(self, error: Optional[str]) -> None:
+        """Record or clear audio error state."""
+        self._state.audio_error = error
 
     def reset_task(self, task_name: Optional[str] = None) -> None:
         """Set or clear the active high-level task."""
