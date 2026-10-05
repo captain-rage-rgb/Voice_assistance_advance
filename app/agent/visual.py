@@ -158,6 +158,28 @@ class UITargeter:
                 clarification_question="The screen state has changed or is outdated. Should I refresh and check again?",
             )
 
+        # Check multimodal spatial or relative references (Phase 13)
+        spatial_triggers = (
+            "on the right",
+            "on the left",
+            "second option",
+            "first option",
+            "click that",
+            "right one",
+            "left one",
+            "close this",
+            "the second",
+            "the first",
+        )
+        if any(trigger in query_clean for trigger in spatial_triggers) or query_clean in ("that", "this"):
+            from app.agent.multimodal import MultimodalReferenceResolver
+            resolver = MultimodalReferenceResolver(logger=self.logger)
+            return resolver.resolve_reference(
+                reference_phrase=target_query,
+                observation=observation,
+                max_age_seconds=max_age_seconds,
+            )
+
         scored_candidates: List[Tuple[UIElement, float]] = []
 
         # Helper to score an element

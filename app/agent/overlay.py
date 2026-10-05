@@ -13,17 +13,24 @@ from app.agent.runtime import AgentRuntime
 
 
 class OverlayDisplayState(str, Enum):
-    """Minimal visual states of the floating overlay."""
+    """Minimal visual states of the floating overlay (Phases 1-15)."""
 
     IDLE = "Idle"
     LISTENING = "Listening"
     THINKING = "Thinking"
-    EXECUTING = "Executing"
-    VERIFYING = "Verifying"
+    ACTING = "Acting"
+    EXECUTING = "Executing"  # Compatible alias
+    CHECKING = "Checking"
+    VERIFYING = "Verifying"  # Compatible alias
+    WAITING = "Waiting"
+    PAUSED = "Paused"  # Compatible alias
+    CONFIRMING = "Confirming"
+    WAITING_FOR_CONFIRMATION = "Waiting for confirmation"  # Compatible alias
+    NEEDS_CLARIFICATION = "Needs clarification"
     RECOVERING = "Recovering"
-    WAITING_FOR_CONFIRMATION = "Waiting for confirmation"
-    PAUSED = "Paused"
     STOPPED = "Stopped"
+    COMPLETED = "Completed"
+    FAILED = "Failed"
 
 
 class FloatingOverlay:

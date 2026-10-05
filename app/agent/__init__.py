@@ -19,6 +19,19 @@ from app.agent.orchestration import (
     TaskGoal,
 )
 from app.agent.overlay import FloatingOverlay, OverlayDisplayState
+from app.agent.multimodal import (
+    EvidenceItem,
+    EvidenceType,
+    MultimodalReferenceResolver,
+    UnifiedInteractionState,
+)
+from app.agent.recovery import (
+    AdaptiveRecoveryManager,
+    FailureCategory,
+    FailureClassifier,
+    FinalRunState,
+    RecoveryPlan,
+)
 from app.agent.run_manager import RunLifecycleState, RunManager
 from app.agent.runtime import AgentRuntime
 from app.agent.validator import ActionValidator
@@ -73,4 +86,14 @@ __all__ = [
     "ConfirmationRequest",
     "ConfirmationStatus",
     "ConfirmationManager",
+    # Phase 13-15 Multimodal & Adaptive Recovery
+    "EvidenceType",
+    "EvidenceItem",
+    "UnifiedInteractionState",
+    "MultimodalReferenceResolver",
+    "FailureCategory",
+    "FailureClassifier",
+    "FinalRunState",
+    "AdaptiveRecoveryManager",
+    "RecoveryPlan",
 ]

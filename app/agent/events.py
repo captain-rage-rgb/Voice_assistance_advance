@@ -82,6 +82,11 @@ class EventType(str, Enum):
     STATUS_REQUESTED = "STATUS_REQUESTED"
     STATUS_RESPONDED = "STATUS_RESPONDED"
 
+    # Multimodal Fusion & Adaptive Recovery (Phase 13-15)
+    STATE_FUSED = "STATE_FUSED"
+    FAILURE_CLASSIFIED = "FAILURE_CLASSIFIED"
+    RUN_FINALIZED = "RUN_FINALIZED"
+
     # Interruption & errors
     USER_INTERRUPTED = "USER_INTERRUPTED"
     AGENT_ERROR = "AGENT_ERROR"

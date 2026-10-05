@@ -110,6 +110,14 @@ class TaskContext:
         """Return the most recent visual observation, if any."""
         return self.recent_visual_observations[-1] if self.recent_visual_observations else None
 
+    @latest_visual_observation.setter
+    def latest_visual_observation(self, val: Optional[Any]) -> None:
+        """Set or clear the latest visual observation."""
+        if val is None:
+            self.recent_visual_observations.clear()
+        else:
+            self.record_visual_observation(val)
+
     def record_visual_observation(self, observation: Any, max_entries: int = 5) -> None:
         """
         Record a visual observation, strictly bounding memory and discarding obsolete ones.

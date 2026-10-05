@@ -62,6 +62,12 @@ class Settings(BaseSettings):
     max_subgoals_per_task: int = 10
     require_confirmation_for_consequential: bool = True
 
+    # Adaptive Recovery, Multimodal State & Resilience (Phase 13-15)
+    max_observation_retries: int = 3
+    max_replanning_attempts: int = 3
+    recovery_timeout_seconds: float = 15.0
+    enable_multimodal_fusion: bool = True
+
 
 # Singleton instance for application-wide use
 settings = Settings()

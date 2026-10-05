@@ -13,6 +13,11 @@ from app.agent.context import ActionResult, ExecutionOutcome, Observation, TaskC
 from app.agent.events import Event, EventBus, EventType
 from app.agent.executor import ActionExecutor, MockExecutor
 from app.agent.health import HealthMonitor
+from app.agent.multimodal import (
+    EvidenceType,
+    MultimodalReferenceResolver,
+    UnifiedInteractionState,
+)
 from app.agent.orchestration import (
     ConfirmationManager,
     ConfirmationRequest,
@@ -21,6 +26,13 @@ from app.agent.orchestration import (
     GoalStatus,
     SubGoal,
     TaskGoal,
+)
+from app.agent.recovery import (
+    AdaptiveRecoveryManager,
+    FailureCategory,
+    FailureClassifier,
+    FinalRunState,
+    RecoveryPlan,
 )
 from app.agent.run_manager import RunManager
 from app.agent.validator import ActionValidator
@@ -61,6 +73,8 @@ class AgentRuntime:
         visual_verifier: Optional[VisualVerifier] = None,
         confirmation_manager: Optional[ConfirmationManager] = None,
         orchestrator: Optional[GoalOrchestrator] = None,
+        failure_classifier: Optional[FailureClassifier] = None,
+        recovery_manager: Optional[AdaptiveRecoveryManager] = None,
         logger: Optional[logging.Logger] = None,
     ) -> None:
         self.event_bus = event_bus or EventBus()
@@ -83,6 +97,15 @@ class AgentRuntime:
             confirmation_manager=self.confirmation_manager,
             logger=self.logger,
         )
+        self.failure_classifier = failure_classifier or FailureClassifier(logger=self.logger)
+        self.recovery_manager = recovery_manager or AdaptiveRecoveryManager(
+            max_action_retries=settings.max_recovery_attempts_per_step,
+            max_observation_retries=settings.max_observation_retries,
+            max_replanning_attempts=settings.max_replanning_attempts,
+            classifier=self.failure_classifier,
+            logger=self.logger,
+        )
+        self._interaction_states: Dict[str, UnifiedInteractionState] = {}
 
         self._worker_task: Optional[asyncio.Task] = None
         self._current_executing_task: Optional[asyncio.Task] = None
@@ -238,6 +261,13 @@ class AgentRuntime:
             Event(EventType.ACTION_QUEUED, {"action_id": action.action_id, "action_type": action.action_type, "run_id": action.run_id})
         )
 
+    def get_or_create_interaction_state(self, run_id: Optional[str] = None) -> UnifiedInteractionState:
+        """Get or initialize UnifiedInteractionState for run ID (Phase 13)."""
+        target_run = run_id or self.active_run_id or "default_run"
+        if target_run not in self._interaction_states:
+            self._interaction_states[target_run] = UnifiedInteractionState(run_id=target_run)
+        return self._interaction_states[target_run]
+
     async def interrupt(self, reason: str = "User requested cancellation") -> None:
         """
         Trigger an immediate interruption using unified cancellation.
@@ -247,9 +277,20 @@ class AgentRuntime:
         self.state_manager.request_cancellation()
         self._pause_event.clear()
 
-        # Invalidate any pending confirmation requests for active run (Phase 12)
+        # Invalidate any pending confirmation requests & multimodal observations (Phases 12-14)
         if self.active_run_id:
             self.confirmation_manager.invalidate_run(self.active_run_id)
+            if self.active_run_id in self._interaction_states:
+                st = self._interaction_states[self.active_run_id]
+                st.interruption_state = True
+                st.execution_state = FinalRunState.CANCELLED.value
+                st.invalidate_observation("User requested cancellation")
+            await self.event_bus.publish(
+                Event(
+                    EventType.RUN_FINALIZED,
+                    {"run_id": self.active_run_id, "final_state": FinalRunState.CANCELLED.value, "reason": reason},
+                )
+            )
 
         # Cancel active run centrally
         await self.run_manager.cancel_active_run(reason=reason)
@@ -360,12 +401,52 @@ class AgentRuntime:
                 await self.confirm_action(confirmation_id=cid, approved=False, run_id=self.active_run_id)
                 return
 
-        # Pause and resume handling (Phase 9)
+        # Conversational continuity queries (Phase 14)
+        if "what happened" in intent_lower or "what went wrong" in intent_lower:
+            ctx = self.run_manager.get_context(self.active_run_id) if self.active_run_id else None
+            last_fail = ctx.recent_failures[-1] if ctx and ctx.recent_failures else "No recent issues detected."
+            self.logger.info("CONVERSATIONAL STATUS: %s", last_fail)
+            await self.event_bus.publish(
+                Event(EventType.STATUS_RESPONDED, {"run_id": self.active_run_id, "status": f"Status: {last_fail}"})
+            )
+            return
+
+        if "actually cancel" in intent_lower:
+            await self.interrupt(reason="User said 'actually cancel that'")
+            return
+
+        if intent_lower in ("try again", "retry", "retry that", "do that again"):
+            ctx = self.run_manager.get_context(self.active_run_id) if self.active_run_id else None
+            if ctx and ctx.completed_actions:
+                last_act = ctx.completed_actions[-1]
+                token = await self.get_or_create_run_token()
+                new_act = Action(
+                    action_type=last_act.action_type,
+                    arguments=dict(last_act.action_arguments),
+                    run_id=token.run_id,
+                )
+                await self.submit_action(new_act)
+                return
+
+        if "go back" in intent_lower:
+            token = await self.get_or_create_run_token()
+            back_act = Action(action_type="navigate", arguments={"destination": "back"}, run_id=token.run_id)
+            await self.submit_action(back_act)
+            return
+
+        # Pause and resume handling (Phase 9 & 14)
         if intent_type in ("PAUSE", "pause", "WAIT", "wait"):
             await self.pause()
             return
 
         if intent_type in ("RESUME", "resume", "CONTINUE", "continue"):
+            # Section 14.6: "Continue" allowed only if task context remains valid and not permanently cancelled
+            if self.active_run_id and self.is_run_cancelled(self.active_run_id):
+                self.logger.info("RESUME REJECTED: Canceled run %s cannot be resumed", self.active_run_id)
+                await self.event_bus.publish(
+                    Event(EventType.STATUS_RESPONDED, {"run_id": self.active_run_id, "status": "The task was cancelled. Please give a new command."})
+                )
+                return
             await self.resume()
             return
 
@@ -843,11 +924,47 @@ class AgentRuntime:
         obs_before: Optional[Observation] = None,
     ) -> bool:
         """
-        Attempts bounded recovery loop when an action fails or verification fails.
-        Returns True if recovered successfully, False otherwise.
+        Attempts bounded recovery loop when an action fails or verification fails (Phases 8 & 14).
+        Enforces failure classification, fresh evidence gathering, and strict retry limits.
         """
+        error_msg = initial_error or "Unknown failure"
+        failure_cat = self.failure_classifier.classify(error_msg, action=action)
+        await self.event_bus.publish(
+            Event(
+                EventType.FAILURE_CLASSIFIED,
+                {
+                    "action_id": action.action_id,
+                    "run_id": action.run_id,
+                    "category": failure_cat.value,
+                    "error": error_msg,
+                },
+            )
+        )
+
         attempts = 0
         while self.verifier.can_recover(action, context, attempts):
+            attempts += 1
+            plan = self.recovery_manager.plan_recovery(
+                action=action,
+                error=error_msg,
+                attempt_num=attempts,
+                context=context,
+            )
+
+            if plan.abort_task:
+                self.logger.info("RECOVERY ABORTED: %s", plan.reason)
+                break
+
+            if plan.clarification_question:
+                await self.request_clarification(plan.clarification_question, run_id=action.run_id)
+                break
+
+            # Enforce fresh evidence: invalidate stale observation before retrying (Section 14.3)
+            if plan.requires_fresh_observation:
+                context.latest_visual_observation = None
+                if action.run_id in self._interaction_states:
+                    self._interaction_states[action.run_id].invalidate_observation("Fresh evidence required for retry")
+
             if token and token.is_cancelled:
                 self.logger.info("RECOVERY CANCELLED: Token cancelled during recovery")
                 return False
@@ -856,19 +973,22 @@ class AgentRuntime:
                 self.logger.info("RECOVERY CANCELLED: Run %s cancelled during recovery", action.run_id)
                 return False
 
-            attempts += 1
             context.recovery_count += 1
             self.logger.info(
-                "RECOVERY ATTEMPT %d: Attempting recovery for %s (Run: %s)",
+                "RECOVERY ATTEMPT %d: Attempting recovery for %s (Run: %s, Category: %s)",
                 attempts,
                 action.action_type,
                 action.run_id,
+                failure_cat.value,
             )
             await self.event_bus.publish(
-                Event(EventType.RECOVERY_STARTED, {"action_id": action.action_id, "attempt": attempts, "run_id": action.run_id})
+                Event(
+                    EventType.RECOVERY_STARTED,
+                    {"action_id": action.action_id, "attempt": attempts, "run_id": action.run_id, "category": failure_cat.value},
+                )
             )
 
-            recovery_action = self.verifier.create_recovery_action(action, attempt_num=attempts)
+            recovery_action = plan.recommended_action or self.verifier.create_recovery_action(action, attempt_num=attempts)
 
             try:
                 self._current_executing_task = asyncio.create_task(self.executor.execute(recovery_action, token=token))
@@ -931,7 +1051,7 @@ class AgentRuntime:
         return False
 
     def _check_subgoal_advancement(self, action: Action, result_record: ActionResult) -> None:
-        """Advance orchestrator sub-goal if this action completed an active sub-goal (Phase 12)."""
+        """Advance orchestrator sub-goal if this action completed an active sub-goal (Phases 12 & 14)."""
         goal = self.orchestrator.get_goal(action.run_id)
         if goal:
             active_sg = goal.get_active_subgoal()
@@ -951,3 +1071,14 @@ class AgentRuntime:
                             )
                         )
                     )
+                    if all_done:
+                        if action.run_id in self._interaction_states:
+                            self._interaction_states[action.run_id].execution_state = FinalRunState.COMPLETED.value
+                        asyncio.create_task(
+                            self.event_bus.publish(
+                                Event(
+                                    EventType.RUN_FINALIZED,
+                                    {"run_id": action.run_id, "final_state": FinalRunState.COMPLETED.value},
+                                )
+                            )
+                        )
