@@ -38,7 +38,6 @@ class AudioPipeline:
         self.audio_queue: asyncio.Queue[AudioChunk] = asyncio.Queue(
             maxsize=self.config.audio_queue_max_size
         )
-
         self.vad = vad or VoiceActivityDetector(
             aggressiveness=self.config.vad_aggressiveness,
             speech_start_frames=self.config.vad_speech_start_frames,
@@ -55,8 +54,16 @@ class AudioPipeline:
             logger=self.logger,
         )
 
+        self._subscriber_queues: list[asyncio.Queue[AudioChunk]] = []
         self._consumer_task: Optional[asyncio.Task] = None
         self._stop_event = asyncio.Event()
+
+    def create_subscriber_queue(self, maxsize: Optional[int] = None) -> asyncio.Queue[AudioChunk]:
+        """Create a dedicated consumer queue receiving a stream of every captured audio chunk."""
+        size = maxsize or self.config.audio_queue_max_size
+        q: asyncio.Queue[AudioChunk] = asyncio.Queue(maxsize=size)
+        self._subscriber_queues.append(q)
+        return q
 
     @property
     def is_running(self) -> bool:
@@ -145,6 +152,17 @@ class AudioPipeline:
                     chunk = await asyncio.wait_for(self.audio_queue.get(), timeout=0.1)
                 except asyncio.TimeoutError:
                     continue
+
+                # Broadcast chunk to all registered subscribers (e.g. STT Manager)
+                for sub_q in self._subscriber_queues:
+                    try:
+                        sub_q.put_nowait(chunk)
+                    except asyncio.QueueFull:
+                        try:
+                            sub_q.get_nowait()
+                            sub_q.put_nowait(chunk)
+                        except (asyncio.QueueEmpty, asyncio.QueueFull):
+                            pass
 
                 is_speech, transition = self.vad.process_chunk(chunk)
 

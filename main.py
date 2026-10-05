@@ -115,12 +115,13 @@ async def run_interactive() -> None:
         mic_active = True
 
         has_deepgram = bool(settings.stt_api_key and not settings.stt_api_key.startswith("your_"))
-        stt_provider = DeepgramStreamingSTT(settings, logger=logger) if has_deepgram else MockStreamingSTT()
+        stt_provider = None if has_deepgram else MockStreamingSTT()
         stt_manager = STTManager(
-            audio_queue=audio_pipeline.audio_queue,
+            audio_queue=audio_pipeline.create_subscriber_queue(),
             stt_provider=stt_provider,
             event_bus=event_bus,
             state_manager=state_manager,
+            intent_detector=intent_detector,
             config=settings,
             logger=logger,
         )
