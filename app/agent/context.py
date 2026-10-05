@@ -1,7 +1,7 @@
 """
-Lightweight Execution Context for active agent runs (Phase 7).
-Maintains structured tracking of task objective, completed actions, observations,
-and recovery state without unbounded memory growth.
+Lightweight Execution Context for active agent runs (Phases 7-10).
+Maintains structured tracking of task objectives, completed actions, milestones,
+observations, conversational references, and recovery state without unbounded memory growth.
 """
 
 from dataclasses import dataclass, field
@@ -60,6 +60,18 @@ class ActionResult:
 
 
 @dataclass
+class TaskMilestone:
+    """Represents a distinct completed milestone within a long-running task."""
+
+    name: str
+    milestone_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    description: Optional[str] = None
+    completed: bool = True
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
 class TaskContext:
     """
     Lightweight, bounded task execution context for an active agent run.
@@ -73,24 +85,68 @@ class TaskContext:
     current_step_index: int = 0
     max_history_entries: int = 20
 
-    # Structured history of completed steps
+    # Structured history of completed steps and milestones
     completed_actions: List[ActionResult] = field(default_factory=list)
+    milestones: List[TaskMilestone] = field(default_factory=list)
     observations: List[Observation] = field(default_factory=list)
+    pending_work: List[str] = field(default_factory=list)
+    recent_failures: List[str] = field(default_factory=list)
+
+    # Conversational continuity & reference resolution
+    reference_context: Dict[str, Any] = field(default_factory=dict)
+
+    # State tracking
+    is_paused: bool = False
+    resumed_from_milestone: Optional[str] = None
     recovery_count: int = 0
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
     def record_completed_action(self, result: ActionResult) -> None:
-        """Record completed action, pruning older entries if history exceeds maximum."""
+        """Record completed action, update reference context, and prune history."""
         self.completed_actions.append(result)
         if len(self.completed_actions) > self.max_history_entries:
             self.completed_actions.pop(0)
         self.current_step_index += 1
+
+        # Automatically update conversational references
+        if result.is_success:
+            self.reference_context["last_action_type"] = result.action_type
+            self.reference_context["last_action_arguments"] = dict(result.action_arguments)
+            if "application" in result.action_arguments:
+                self.reference_context["last_application"] = result.action_arguments["application"]
+            if "query" in result.action_arguments:
+                self.reference_context["last_query"] = result.action_arguments["query"]
+            if "destination" in result.action_arguments or "url" in result.action_arguments:
+                self.reference_context["last_destination"] = result.action_arguments.get("destination") or result.action_arguments.get("url")
+
+    def record_milestone(
+        self,
+        name: str,
+        description: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> TaskMilestone:
+        """Record a completed milestone, keeping milestone history bounded."""
+        milestone = TaskMilestone(
+            name=name,
+            description=description,
+            metadata=metadata or {},
+        )
+        self.milestones.append(milestone)
+        if len(self.milestones) > self.max_history_entries:
+            self.milestones.pop(0)
+        return milestone
 
     def record_observation(self, observation: Observation) -> None:
         """Record an observation, keeping history bounded."""
         self.observations.append(observation)
         if len(self.observations) > self.max_history_entries:
             self.observations.pop(0)
+
+    def record_failure(self, failure_reason: str) -> None:
+        """Record a recent failure for diagnostic and recovery tracking."""
+        self.recent_failures.append(failure_reason)
+        if len(self.recent_failures) > self.max_history_entries:
+            self.recent_failures.pop(0)
 
     def is_action_already_completed(self, action_type: str, arguments: Optional[Dict[str, Any]] = None) -> bool:
         """Check if an equivalent action was already successfully executed in this run."""
@@ -114,3 +170,43 @@ class TaskContext:
                     return True
         return False
 
+    def pause(self) -> None:
+        """Pause task execution without terminating task context."""
+        self.is_paused = True
+
+    def resume(self) -> Optional[str]:
+        """Resume task execution from the latest valid milestone or step."""
+        self.is_paused = False
+        if self.milestones:
+            self.resumed_from_milestone = self.milestones[-1].name
+        return self.resumed_from_milestone
+
+    def resolve_reference(self, reference_text: str) -> Optional[Dict[str, Any]]:
+        """
+        Resolve an ambiguous or anaphoric reference ('it', 'that', 'the first one',
+        'the cheapest one', 'do that again') using bounded conversation context.
+        """
+        ref_lower = reference_text.lower().strip()
+
+        # Repeat previous action: "do that again", "repeat", "again"
+        if ref_lower in ("do that again", "repeat", "again", "repeat that"):
+            if "last_action_type" in self.reference_context:
+                return {
+                    "action_type": self.reference_context["last_action_type"],
+                    "arguments": dict(self.reference_context.get("last_action_arguments", {})),
+                }
+
+        # Targeting previous application: "it", "that", "the app", "the browser"
+        if ref_lower in ("it", "that", "the browser", "the app", "the document"):
+            if "last_application" in self.reference_context:
+                return {"application": self.reference_context["last_application"]}
+
+        # Specific item selectors: "the cheapest one", "the first one", "the first result"
+        if any(w in ref_lower for w in ("cheapest", "first", "previous result", "top result")):
+            return {
+                "target_selector": ref_lower,
+                "context_query": self.reference_context.get("last_query", ""),
+                "parent_application": self.reference_context.get("last_application", ""),
+            }
+
+        return None

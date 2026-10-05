@@ -26,16 +26,17 @@ Instead of recording a complete turn, stopping, running speech-to-text, querying
 
 ## Current Status
 
-**Phase 7 & 8 — Context-Aware Planning, Incremental Execution, Verification & Bounded Recovery (Complete)**
+**Phase 9 & 10 — Long-Running Tasks, Conversational Continuity, Production Hardening & Reliability (Complete)**
 
-The agent acts as a continuous, context-aware computer operator with post-action verification and bounded recovery:
-* **Lightweight Task Context (`app/agent/context.py`)**: Bounded execution context tracking current run ID, original intent, current task objective, completed actions with structured outcomes (`ExecutionOutcome`, `ActionResult`), and observations between meaningful steps without unbounded memory growth.
-* **Context-Aware Deduplication (`app/agent/context.py`)**: Prevents re-executing already completed actions when streaming or multi-step models emit similar steps later.
-* **Pre-Execution Action Validation (`app/agent/validator.py`)**: Strict schema, parameter, and safety validation ensuring malformed or unsupported action fragments never reach OS-level executors.
-* **Post-Action Verification & Self-Correction Engine (`app/agent/verifier.py`)**: Verifies actual computer state changes following meaningful actions rather than fabricating success based on raw API return codes.
-* **Bounded Self-Correction Recovery (`app/agent/runtime.py`)**: Automatic, bounded recovery loop when verification fails, adapting recovery attempts up to configured step and run limits, with cancellation always taking precedence.
-* **Clarification Handling**: Concise clarification requests for ambiguous input, cleanly yielding control back to listening mode.
-* **Overlay Lifecycle Feedback (`app/agent/overlay.py`)**: Minimal top overlay states (`Listening`, `Thinking`, `Executing`, `Verifying`, `Recovering`, `Stopped`) with immediate, non-blocking STOP button responsiveness throughout all phases.
+The agent is hardened for extended real-world use with long-running task support and resilient lifecycle controls:
+* **Unified Run Manager (`app/agent/run_manager.py`)**: Authoritative coordinator managing active run lifecycles, generation tracking, central stale-result protection, run replacement, and history eviction to prevent memory leaks.
+* **Persistent Task Context & Milestones (`app/agent/context.py`)**: Structured `TaskMilestone` tracking for multi-stage operations, enabling recovery from the latest valid milestone without replaying from the beginning.
+* **Conversational Continuity & Reference Resolution (`app/agent/context.py`, `app/agent/runtime.py`)**: Seamless follow-up commands resolving anaphoric references ("that", "it", "the browser", "do that again", "the cheapest one") against bounded conversation context without bypassing action validation.
+* **Pause versus Cancellation (`app/agent/runtime.py`, `app/agent/run_manager.py`)**: Clean distinction between `STOP/CANCEL` (authoritative termination) and `PAUSE/WAIT` (temporarily pausing actions while retaining context; resumed with "continue").
+* **Subsystem Error Boundaries & Health Monitoring (`app/agent/health.py`)**: Non-crashing error boundaries across all subsystems with diagnostic internal health reporting (`HealthMonitor`).
+* **Bounded Timeouts**: Action execution (`settings.action_timeout_seconds`), verification (`settings.verification_timeout_seconds`), and task timeouts with bounded failure/recovery paths.
+* **Graceful Shutdown**: Rapid, bounded cancellation of active runs, clearing of queues, stopping of worker loops, and release of all audio and model resources.
+* **Overlay Lifecycle Hardening (`app/agent/overlay.py`)**: Minimal top overlay states (`Listening`, `Thinking`, `Executing`, `Verifying`, `Recovering`, `Paused`, `Stopped`) with always-responsive STOP control throughout.
 
 ---
 

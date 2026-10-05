@@ -1,14 +1,16 @@
 """
-Agent package exports.
+Agent package exports (Phases 1-10).
 """
 
 from app.agent.action import Action, ActionStatus
 from app.agent.action_queue import ActionQueue
 from app.agent.cancellation import CancellationToken
-from app.agent.context import ActionResult, ExecutionOutcome, Observation, TaskContext
+from app.agent.context import ActionResult, ExecutionOutcome, Observation, TaskContext, TaskMilestone
 from app.agent.events import Event, EventBus, EventHandler, EventType
 from app.agent.executor import ActionExecutor, MockExecutor
+from app.agent.health import HealthMonitor, SubsystemHealth, SubsystemStatus
 from app.agent.overlay import FloatingOverlay, OverlayDisplayState
+from app.agent.run_manager import RunLifecycleState, RunManager
 from app.agent.runtime import AgentRuntime
 from app.agent.validator import ActionValidator
 from app.agent.verifier import Verifier
@@ -21,6 +23,7 @@ __all__ = [
     "ExecutionOutcome",
     "Observation",
     "TaskContext",
+    "TaskMilestone",
     "ActionValidator",
     "Verifier",
     "CancellationToken",
@@ -33,4 +36,9 @@ __all__ = [
     "FloatingOverlay",
     "OverlayDisplayState",
     "AgentRuntime",
+    "RunManager",
+    "RunLifecycleState",
+    "HealthMonitor",
+    "SubsystemHealth",
+    "SubsystemStatus",
 ]

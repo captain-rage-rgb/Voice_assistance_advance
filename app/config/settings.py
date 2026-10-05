@@ -43,6 +43,14 @@ class Settings(BaseSettings):
     max_total_recoveries_per_run: int = 4
     enable_post_action_verification: bool = True
 
+    # Long-Running Tasks & Hardening Configuration (Phase 9-10)
+    action_timeout_seconds: float = 10.0
+    verification_timeout_seconds: float = 5.0
+    task_timeout_seconds: float = 60.0
+    max_milestones_per_task: int = 20
+    max_context_history_entries: int = 20
+    enable_conversational_continuity: bool = True
+
 
 # Singleton instance for application-wide use
 settings = Settings()

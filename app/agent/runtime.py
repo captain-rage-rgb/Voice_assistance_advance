@@ -1,5 +1,6 @@
 """
-Core Agent Runtime orchestrating events, action queues, execution, context, and state.
+Core Agent Runtime orchestrating events, action queues, execution, context,
+run lifecycles, and reliability state (Phases 1-10).
 """
 
 import asyncio
@@ -8,9 +9,11 @@ from typing import Optional
 from app.agent.action import Action, ActionStatus
 from app.agent.action_queue import ActionQueue
 from app.agent.cancellation import CancellationToken
-from app.agent.context import ActionResult, ExecutionOutcome, Observation, TaskContext
+from app.agent.context import ActionResult, ExecutionOutcome, Observation, TaskContext, TaskMilestone
 from app.agent.events import Event, EventBus, EventType
 from app.agent.executor import ActionExecutor, MockExecutor
+from app.agent.health import HealthMonitor
+from app.agent.run_manager import RunManager
 from app.agent.validator import ActionValidator
 from app.agent.verifier import Verifier
 from app.config.settings import settings
@@ -19,10 +22,11 @@ from app.state.state_manager import AgentLifecycleState, StateManager
 
 class AgentRuntime:
     """
-    Asynchronous Core Agent Runtime (Phases 1-8).
+    Asynchronous Core Agent Runtime (Phases 1-10).
     Coordinates event dispatch, state transitions, action queueing,
     context-aware planning, post-action verification, bounded recovery,
-    unified cancellation tokens, and graceful shutdown.
+    long-running task milestones, pause/resume, unified run management,
+    timeouts, error boundaries, and graceful shutdown.
     """
 
     def __init__(
@@ -33,6 +37,8 @@ class AgentRuntime:
         executor: Optional[ActionExecutor] = None,
         validator: Optional[ActionValidator] = None,
         verifier: Optional[Verifier] = None,
+        run_manager: Optional[RunManager] = None,
+        health_monitor: Optional[HealthMonitor] = None,
         logger: Optional[logging.Logger] = None,
     ) -> None:
         self.event_bus = event_bus or EventBus()
@@ -46,18 +52,13 @@ class AgentRuntime:
             max_total_recovery=settings.max_total_recoveries_per_run,
             logger=self.logger,
         )
+        self.run_manager = run_manager or RunManager(logger=self.logger)
+        self.health_monitor = health_monitor or HealthMonitor(logger=self.logger)
 
         self._worker_task: Optional[asyncio.Task] = None
         self._current_executing_task: Optional[asyncio.Task] = None
         self._stop_event = asyncio.Event()
-
-        # Active run tracking and cancellation tokens
-        self._active_run_token: Optional[CancellationToken] = None
-        self._run_tokens: dict[str, CancellationToken] = {}
-        self._run_lock = asyncio.Lock()
-
-        # Task contexts per run (bounded context tracking)
-        self._task_contexts: dict[str, TaskContext] = {}
+        self._pause_event = asyncio.Event()
 
         # Subscribe default internal handlers
         self._setup_event_subscriptions()
@@ -65,31 +66,25 @@ class AgentRuntime:
     @property
     def active_run_id(self) -> Optional[str]:
         """Return the ID of the currently active run, if any."""
-        return self._active_run_token.run_id if self._active_run_token else None
+        return self.run_manager.active_run_id
 
     def get_or_create_task_context(self, run_id: Optional[str] = None) -> TaskContext:
         """Get or create the TaskContext for a specific run ID."""
-        target_id = run_id or (self.active_run_id if self._active_run_token else "default_run")
-        if target_id not in self._task_contexts:
-            self._task_contexts[target_id] = TaskContext(run_id=target_id)
-        return self._task_contexts[target_id]
+        return self.run_manager.get_context(run_id)
 
     async def get_or_create_run_token(self) -> CancellationToken:
         """Get the current run token or create a new one."""
-        async with self._run_lock:
-            if self._active_run_token is None or self._active_run_token.is_cancelled:
-                self._active_run_token = CancellationToken(logger=self.logger)
-                self._run_tokens[self._active_run_token.run_id] = self._active_run_token
-                self.state_manager.set_current_run_id(self._active_run_token.run_id)
-                self.get_or_create_task_context(self._active_run_token.run_id)
-            return self._active_run_token
+        token = await self.run_manager.get_or_create_active_token()
+        self.state_manager.set_current_run_id(token.run_id)
+        return token
 
     def is_run_cancelled(self, run_id: Optional[str]) -> bool:
         """Check if a specific run_id was cancelled."""
-        if not run_id:
-            return False
-        token = self._run_tokens.get(run_id)
-        return token.is_cancelled if token else False
+        return self.run_manager.is_run_cancelled(run_id)
+
+    def is_run_active(self, run_id: Optional[str]) -> bool:
+        """Check if a specific run_id is active."""
+        return self.run_manager.is_run_active(run_id)
 
     def _setup_event_subscriptions(self) -> None:
         """Register default runtime event handlers on the event bus."""
@@ -105,17 +100,20 @@ class AgentRuntime:
         self.logger.info("AGENT STARTED: Starting runtime loop...")
         self.state_manager.set_lifecycle(AgentLifecycleState.RUNNING)
         self._stop_event.clear()
+        self._pause_event.clear()
 
         self._worker_task = asyncio.create_task(self._process_queue())
+        self.health_monitor.record_healthy("runtime")
         await self.event_bus.publish(Event(EventType.SYSTEM_STARTED))
 
     async def stop(self) -> None:
-        """Gracefully shut down the agent runtime."""
+        """Gracefully shut down the agent runtime with bounded timeout."""
         self.logger.info("SHUTDOWN REQUESTED: Stopping runtime...")
         self.state_manager.set_lifecycle(AgentLifecycleState.STOPPING)
         await self.event_bus.publish(Event(EventType.SYSTEM_STOPPING))
 
         self._stop_event.set()
+        self._pause_event.clear()
 
         if self._current_executing_task and not self._current_executing_task.done():
             self._current_executing_task.cancel()
@@ -128,15 +126,59 @@ class AgentRuntime:
         if self._worker_task and not self._worker_task.done():
             self._worker_task.cancel()
             try:
-                await self._worker_task
-            except asyncio.CancelledError:
+                await asyncio.wait_for(self._worker_task, timeout=1.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
                 pass
+
+        await self.run_manager.shutdown()
 
         self.state_manager.set_current_action(None)
         self.state_manager.set_pending_count(0)
         self.state_manager.set_lifecycle(AgentLifecycleState.STOPPED)
         self.logger.info("AGENT STOPPED: Graceful shutdown complete.")
         await self.event_bus.publish(Event(EventType.SYSTEM_STOPPED))
+
+    async def pause(self) -> None:
+        """Pause active run execution without discarding task context."""
+        success = await self.run_manager.pause_active_run()
+        if success:
+            self._pause_event.set()
+            self.state_manager.set_current_action(None)
+            self.logger.info("RUNTIME PAUSED for run %s", self.active_run_id)
+            await self.event_bus.publish(
+                Event(EventType.TASK_PAUSED, {"run_id": self.active_run_id})
+            )
+
+    async def resume(self) -> None:
+        """Resume paused run execution from the latest valid state."""
+        milestone = await self.run_manager.resume_active_run()
+        self._pause_event.clear()
+        self.logger.info("RUNTIME RESUMED for run %s (milestone: %s)", self.active_run_id, milestone)
+        await self.event_bus.publish(
+            Event(EventType.TASK_RESUMED, {"run_id": self.active_run_id, "milestone": milestone})
+        )
+
+    async def record_milestone(
+        self,
+        name: str,
+        description: Optional[str] = None,
+        metadata: Optional[dict] = None,
+    ) -> TaskMilestone:
+        """Record a completed milestone in the current active task context."""
+        context = self.get_or_create_task_context(self.active_run_id)
+        milestone = context.record_milestone(name=name, description=description, metadata=metadata)
+        self.logger.info("MILESTONE REACHED: [%s] (Run: %s)", name, context.run_id)
+        await self.event_bus.publish(
+            Event(EventType.MILESTONE_REACHED, {"name": name, "description": description, "run_id": context.run_id})
+        )
+        return milestone
+
+    async def report_progress(self, message: str) -> None:
+        """Report a concise progress update at meaningful milestones."""
+        self.logger.info("PROGRESS: %s (Run: %s)", message, self.active_run_id)
+        await self.event_bus.publish(
+            Event(EventType.PROGRESS_UPDATE, {"message": message, "run_id": self.active_run_id})
+        )
 
     async def submit_action(self, action: Action) -> None:
         """Validate and add an action directly to the queue."""
@@ -174,9 +216,10 @@ class AgentRuntime:
         """
         self.logger.info("USER INTERRUPTED: %s", reason)
         self.state_manager.request_cancellation()
+        self._pause_event.clear()
 
-        if self._active_run_token and not self._active_run_token.is_cancelled:
-            await self._active_run_token.cancel(reason=reason)
+        # Cancel active run centrally
+        await self.run_manager.cancel_active_run(reason=reason)
 
         cancelled_actions = await self.action_queue.clear_all()
         for action in cancelled_actions:
@@ -200,22 +243,32 @@ class AgentRuntime:
 
     async def start_new_command(self, intent_type: str, arguments: Optional[dict] = None) -> CancellationToken:
         """Interrupts any active run and starts a fresh new run with the given command."""
-        if self._active_run_token and not self._active_run_token.is_cancelled:
+        if self.active_run_id and not self.is_run_cancelled(self.active_run_id):
             await self.interrupt(reason=f"Superseded by new command: {intent_type}")
-        token = await self.get_or_create_run_token()
+        token = await self.run_manager.create_new_run(original_intent=intent_type)
+        self.state_manager.set_current_run_id(token.run_id)
         action = Action(action_type=intent_type, arguments=arguments or {}, run_id=token.run_id)
         await self.submit_action(action)
         return token
 
     async def _handle_intent_detected(self, event: Event) -> None:
-        """Convert an INTENT_DETECTED event into a queued Action."""
+        """Convert an INTENT_DETECTED event into a queued Action with conversational continuity."""
         intent_type = event.payload.get("intent") or event.payload.get("action_type") or "unknown_action"
-        arguments = event.payload.get("arguments", {})
+        arguments = dict(event.payload.get("arguments", {}))
         priority = event.payload.get("priority", 0)
 
         # Explicit barge-in interruption intent
         if intent_type == "INTERRUPT":
             await self.interrupt(reason="User barge-in: stop/cancel intent detected")
+            return
+
+        # Pause and resume handling (Phase 9)
+        if intent_type in ("PAUSE", "pause", "WAIT", "wait"):
+            await self.pause()
+            return
+
+        if intent_type in ("RESUME", "resume", "CONTINUE", "continue"):
+            await self.resume()
             return
 
         # Explicit clarification request
@@ -231,21 +284,35 @@ class AgentRuntime:
             return
 
         # If incoming intent is from a new command while previous run is active and executing:
-        if event.payload.get("new_command", False) and self._active_run_token and not self._active_run_token.is_cancelled:
+        if event.payload.get("new_command", False) and self.active_run_id and not self.is_run_cancelled(self.active_run_id):
             await self.interrupt(reason=f"Interrupted by new command: {intent_type}")
 
         # If run is currently in cancellation cooldown or explicitly cancelled without a fresh run started:
-        if self._active_run_token and self._active_run_token.is_cancelled and not incoming_run_id:
+        if self.active_run_id and self.is_run_cancelled(self.active_run_id) and not incoming_run_id:
             if not event.payload.get("new_command", False):
-                self.logger.info("INTENT REJECTED: Runtime is currently stopped/cancelled for run %s", self._active_run_token.run_id)
+                self.logger.info("INTENT REJECTED: Runtime is currently stopped/cancelled for run %s", self.active_run_id)
                 return
-            self._active_run_token = None
 
         token = await self.get_or_create_run_token()
         context = self.get_or_create_task_context(token.run_id)
         if not context.original_intent:
             context.original_intent = intent_type
         context.current_objective = intent_type
+
+        # Conversational continuity & reference resolution (Phase 9)
+        if settings.enable_conversational_continuity:
+            target_ref = arguments.get("target") or arguments.get("reference") or arguments.get("query")
+            if isinstance(target_ref, str):
+                resolved = context.resolve_reference(target_ref)
+                if resolved:
+                    self.logger.info("REFERENCE RESOLVED: '%s' -> %s", target_ref, resolved)
+                    if "action_type" in resolved:
+                        intent_type = resolved["action_type"]
+                        arguments.update(resolved.get("arguments", {}))
+                    elif "application" in resolved:
+                        arguments["application"] = resolved["application"]
+                    elif "target_selector" in resolved:
+                        arguments["selector"] = resolved["target_selector"]
 
         action = Action(action_type=intent_type, arguments=arguments, priority=priority, run_id=token.run_id)
         self.logger.info("EVENT RECEIVED: Intent detected -> Created action %s (Run: %s)", action.action_type, action.run_id)
@@ -257,9 +324,13 @@ class AgentRuntime:
         self.state_manager.clear_cancellation()
 
     async def _process_queue(self) -> None:
-        """Continuous worker loop processing actions sequentially from the queue."""
+        """Continuous worker loop processing actions sequentially from the queue with pause support."""
         while not self._stop_event.is_set():
             try:
+                # If paused, wait until resumed or stopped
+                while self._pause_event.is_set() and not self._stop_event.is_set():
+                    await asyncio.sleep(0.05)
+
                 try:
                     action = await asyncio.wait_for(self.action_queue.get_next(), timeout=0.1)
                 except asyncio.TimeoutError:
@@ -274,11 +345,12 @@ class AgentRuntime:
                 break
             except Exception as e:
                 self.logger.error("AGENT_ERROR: Unexpected error in queue worker: %s", str(e), exc_info=True)
+                self.health_monitor.record_failure("runtime", str(e))
                 self.state_manager.record_error(str(e))
                 await self.event_bus.publish(Event(EventType.AGENT_ERROR, {"error": str(e)}))
 
     async def _execute_action(self, action: Action) -> None:
-        """Executes a single action with lifecycle events, verification, and recovery."""
+        """Executes a single action with lifecycle events, verification, timeout, and recovery."""
         # Stale run check
         if self.is_run_cancelled(action.run_id):
             action.mark_cancelled()
@@ -286,7 +358,7 @@ class AgentRuntime:
             await self.event_bus.publish(Event(EventType.ACTION_CANCELLED, {"action_id": action.action_id, "run_id": action.run_id}))
             return
 
-        token = self._run_tokens.get(action.run_id) or self._active_run_token
+        token = self.run_manager.active_token if self.run_manager.is_run_active(action.run_id) else None
         if token and token.is_cancelled:
             action.mark_cancelled()
             self.logger.info("ACTION CANCELLED: Action %s skipped because token is cancelled", action.action_id)
@@ -320,14 +392,13 @@ class AgentRuntime:
         self.logger.info("ACTION STARTED: %s (ID: %s, Run: %s)", action.action_type, action.action_id, action.run_id)
         await self.event_bus.publish(Event(EventType.ACTION_STARTED, {"action_id": action.action_id, "run_id": action.run_id}))
 
-        # Capture pre-action observation
         obs_before = Observation(observation_type="system_state", data={"action": action.action_type}, run_id=action.run_id)
         context.record_observation(obs_before)
 
         try:
-            # Execute action with cooperative cancellation token
+            # Execute action with cooperative cancellation token and timeout (Phase 10)
             self._current_executing_task = asyncio.create_task(self.executor.execute(action, token=token))
-            raw_result = await self._current_executing_task
+            raw_result = await asyncio.wait_for(self._current_executing_task, timeout=settings.action_timeout_seconds)
             self._current_executing_task = None
 
             # Post-action verification for meaningful actions
@@ -335,7 +406,15 @@ class AgentRuntime:
                 await self.event_bus.publish(
                     Event(EventType.VERIFICATION_STARTED, {"action_id": action.action_id, "run_id": action.run_id})
                 )
-                is_verified, v_message = await self.verifier.verify_action(action, raw_result, token=token)
+                try:
+                    is_verified, v_message = await asyncio.wait_for(
+                        self.verifier.verify_action(action, raw_result, token=token),
+                        timeout=settings.verification_timeout_seconds,
+                    )
+                except asyncio.TimeoutError:
+                    is_verified = False
+                    v_message = f"Verification timed out after {settings.verification_timeout_seconds}s"
+                    self.logger.warning("VERIFICATION TIMED OUT for action %s", action.action_type)
 
                 if is_verified:
                     await self.event_bus.publish(
@@ -397,6 +476,29 @@ class AgentRuntime:
                     Event(EventType.ACTION_COMPLETED, {"action_id": action.action_id, "run_id": action.run_id, "result": raw_result})
                 )
 
+        except asyncio.TimeoutError:
+            self.logger.warning("ACTION TIMED OUT: %s timed out after %.1fs", action.action_type, settings.action_timeout_seconds)
+            await self.event_bus.publish(
+                Event(EventType.ACTION_TIMED_OUT, {"action_id": action.action_id, "run_id": action.run_id, "timeout": settings.action_timeout_seconds})
+            )
+            # Attempt bounded recovery if allowed
+            recovered = await self._attempt_recovery(action, context, token, initial_error="Action execution timed out", obs_before=obs_before)
+            if not recovered:
+                action.mark_failed(f"Action timed out after {settings.action_timeout_seconds}s")
+                result_record = ActionResult(
+                    action_id=action.action_id,
+                    action_type=action.action_type,
+                    outcome=ExecutionOutcome.TIMED_OUT,
+                    action_arguments=action.arguments,
+                    run_id=action.run_id,
+                    observation_before=obs_before,
+                    error="Timed out",
+                )
+                context.record_completed_action(result_record)
+                await self.event_bus.publish(
+                    Event(EventType.ACTION_FAILED, {"action_id": action.action_id, "run_id": action.run_id, "error": "Timed out"})
+                )
+
         except asyncio.CancelledError:
             action.mark_cancelled()
             self.logger.info("ACTION CANCELLED: %s was cancelled during execution", action.action_type)
@@ -413,6 +515,7 @@ class AgentRuntime:
         except Exception as exc:
             exec_error = str(exc)
             self.logger.warning("ACTION EXECUTION ERROR: %s: %s", action.action_type, exec_error)
+            self.health_monitor.record_failure("executor", exec_error, degraded=True)
             recovered = await self._attempt_recovery(action, context, token, initial_error=exec_error, obs_before=obs_before)
             if not recovered:
                 action.mark_failed(exec_error)
@@ -473,10 +576,13 @@ class AgentRuntime:
 
             try:
                 self._current_executing_task = asyncio.create_task(self.executor.execute(recovery_action, token=token))
-                rec_res = await self._current_executing_task
+                rec_res = await asyncio.wait_for(self._current_executing_task, timeout=settings.action_timeout_seconds)
             except asyncio.CancelledError:
                 self.logger.info("RECOVERY CANCELLED: Execution cancelled during recovery attempt")
                 return False
+            except asyncio.TimeoutError:
+                self.logger.warning("Recovery execution attempt %d timed out", attempts)
+                continue
             except Exception as rec_err:
                 self.logger.warning("Recovery execution attempt %d failed: %s", attempts, rec_err)
                 continue
@@ -487,9 +593,15 @@ class AgentRuntime:
                 return False
 
             try:
-                rec_verified, rec_reason = await self.verifier.verify_action(recovery_action, rec_res, token=token)
+                rec_verified, rec_reason = await asyncio.wait_for(
+                    self.verifier.verify_action(recovery_action, rec_res, token=token),
+                    timeout=settings.verification_timeout_seconds,
+                )
             except asyncio.CancelledError:
                 return False
+            except asyncio.TimeoutError:
+                self.logger.warning("Recovery verification attempt %d timed out", attempts)
+                continue
 
             if rec_verified:
                 self.logger.info("RECOVERY SUCCEEDED on attempt %d for action %s", attempts, action.action_type)
