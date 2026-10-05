@@ -46,7 +46,13 @@ class DeepgramStreamingSTT:
     @property
     def is_connected(self) -> bool:
         """Return True if WebSocket connection is open and active."""
-        return self._is_connected and self._ws is not None and self._ws.open
+        if not self._is_connected or self._ws is None:
+            return False
+        if hasattr(self._ws, "state"):
+            return getattr(self._ws.state, "name", "") == "OPEN"
+        if hasattr(self._ws, "open"):
+            return bool(self._ws.open)
+        return True
 
     def _build_ws_url(self) -> str:
         """Construct Deepgram streaming WebSocket URL with query parameters."""
@@ -162,10 +168,10 @@ class DeepgramStreamingSTT:
             self._is_connected = False
             try:
                 # Tell Deepgram to finish processing
-                if self._ws.open:
+                if self.is_connected:
                     await self._ws.send(json.dumps({"type": "CloseStream"}))
                     await asyncio.sleep(0.05)
-                    await self._ws.close()
+                await self._ws.close()
             except Exception as exc:
                 self.logger.warning("Error during Deepgram disconnect: %s", exc)
             finally:
