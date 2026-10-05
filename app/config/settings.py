@@ -31,6 +31,13 @@ class Settings(BaseSettings):
     vad_speech_start_frames: int = 3  # Consecutive speech frames (~90ms) to trigger SPEECH_STARTED
     vad_speech_end_frames: int = 25   # Consecutive silence frames (~750ms) to trigger SPEECH_STOPPED
 
+    # Speech-to-Text (STT) Configuration
+    stt_provider: str = "deepgram"  # Default real-time streaming provider
+    stt_api_key: str | None = None
+    stt_model: str = "nova-2"
+    stt_language: str = "en-US"
+    stt_endpointing_ms: int = 500  # Silence wait time for provider-level endpointing
+
 
 # Singleton instance for application-wide use
 settings = Settings()

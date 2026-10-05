@@ -35,6 +35,12 @@ class AgentState:
     voice_activity_active: bool = False
     audio_error: Optional[str] = None
 
+    # Streaming STT state
+    stt_active: bool = False
+    latest_partial_transcript: str = ""
+    latest_final_transcript: str = ""
+    stt_error: Optional[str] = None
+
 
 class StateManager:
     """Manages agent state transitions and query operations."""
@@ -85,6 +91,25 @@ class StateManager:
     def set_audio_error(self, error: Optional[str]) -> None:
         """Record or clear audio error state."""
         self._state.audio_error = error
+
+    def set_stt_active(self, active: bool) -> None:
+        """Update STT streaming state."""
+        self._state.stt_active = active
+        if not active:
+            self._state.latest_partial_transcript = ""
+
+    def set_partial_transcript(self, text: str) -> None:
+        """Update current active interim partial transcript."""
+        self._state.latest_partial_transcript = text
+
+    def set_final_transcript(self, text: str) -> None:
+        """Record newly finalized transcript segment."""
+        self._state.latest_final_transcript = text
+        self._state.latest_partial_transcript = ""
+
+    def set_stt_error(self, error: Optional[str]) -> None:
+        """Record or clear STT error state."""
+        self._state.stt_error = error
 
     def reset_task(self, task_name: Optional[str] = None) -> None:
         """Set or clear the active high-level task."""

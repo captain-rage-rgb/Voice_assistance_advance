@@ -24,6 +24,13 @@ class EventType(str, Enum):
     VOICE_ACTIVITY_STOPPED = "VOICE_ACTIVITY_STOPPED"
     AUDIO_ERROR = "AUDIO_ERROR"
 
+    # Streaming Speech-to-Text lifecycle & transcripts
+    STT_STARTED = "STT_STARTED"
+    STT_STOPPED = "STT_STOPPED"
+    TRANSCRIPT_PARTIAL = "TRANSCRIPT_PARTIAL"
+    TRANSCRIPT_FINAL = "TRANSCRIPT_FINAL"
+    STT_ERROR = "STT_ERROR"
+
     # Simulated intelligence / intent events
     INTENT_DETECTED = "INTENT_DETECTED"
 
