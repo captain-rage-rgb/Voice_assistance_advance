@@ -5,8 +5,13 @@ Provides an async stream interface while isolating internal PortAudio threading.
 
 import asyncio
 import logging
-from typing import Optional, Protocol
-import sounddevice as sd
+from typing import Any, Optional, Protocol
+
+try:
+    import sounddevice as sd
+except ImportError:
+    sd = None
+
 from app.audio.chunk import AudioChunk
 
 
@@ -53,7 +58,7 @@ class MicrophoneCapture:
         # Number of samples per chunk: e.g., 16000 * 30 / 1000 = 480 samples
         self.blocksize = int(self.sample_rate * self.chunk_duration_ms / 1000)
 
-        self._stream: Optional[sd.RawInputStream] = None
+        self._stream: Optional[Any] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._is_running = False
 
@@ -62,7 +67,7 @@ class MicrophoneCapture:
         """Return True if capture stream is currently active."""
         return self._is_running
 
-    def _audio_callback(self, indata: bytes, frames: int, time_info: dict, status: sd.CallbackFlags) -> None:
+    def _audio_callback(self, indata: bytes, frames: int, time_info: dict, status: Any) -> None:
         """
         Low-level PortAudio callback executing on an internal sounddevice audio thread.
         Thread-safely forwards raw PCM bytes to asyncio event loop.
@@ -100,6 +105,12 @@ class MicrophoneCapture:
         if self._is_running:
             self.logger.warning("Microphone is already running.")
             return
+
+        if sd is None:
+            raise RuntimeError(
+                "sounddevice is not installed in the active Python environment. "
+                "Run using '.venv\\Scripts\\python' or activate the virtual environment."
+            )
 
         self._loop = asyncio.get_running_loop()
 
