@@ -19,6 +19,8 @@ class OverlayDisplayState(str, Enum):
     LISTENING = "Listening"
     THINKING = "Thinking"
     EXECUTING = "Executing"
+    VERIFYING = "Verifying"
+    RECOVERING = "Recovering"
     STOPPED = "Stopped"
 
 
@@ -58,6 +60,12 @@ class FloatingOverlay:
         self.event_bus.subscribe(EventType.ACTION_STARTED, self._on_action_started)
         self.event_bus.subscribe(EventType.ACTION_COMPLETED, self._on_action_ended)
         self.event_bus.subscribe(EventType.ACTION_CANCELLED, self._on_action_ended)
+        self.event_bus.subscribe(EventType.VERIFICATION_STARTED, self._on_verification_started)
+        self.event_bus.subscribe(EventType.VERIFICATION_SUCCEEDED, self._on_verification_ended)
+        self.event_bus.subscribe(EventType.RECOVERY_STARTED, self._on_recovery_started)
+        self.event_bus.subscribe(EventType.RECOVERY_COMPLETED, self._on_recovery_ended)
+        self.event_bus.subscribe(EventType.RECOVERY_FAILED, self._on_recovery_ended)
+        self.event_bus.subscribe(EventType.CLARIFICATION_REQUESTED, self._on_clarification_requested)
         self.event_bus.subscribe(EventType.USER_INTERRUPTED, self._on_interrupted)
 
     async def _on_audio_started(self, event: Event) -> None:
@@ -82,9 +90,26 @@ class FloatingOverlay:
         self.current_action_label = event.payload.get("action_id", "")
 
     async def _on_action_ended(self, event: Event) -> None:
-        if self.display_state == OverlayDisplayState.EXECUTING:
+        if self.display_state in (OverlayDisplayState.EXECUTING, OverlayDisplayState.VERIFYING, OverlayDisplayState.RECOVERING):
             self.display_state = OverlayDisplayState.LISTENING
             self.current_action_label = ""
+
+    async def _on_verification_started(self, event: Event) -> None:
+        self.display_state = OverlayDisplayState.VERIFYING
+
+    async def _on_verification_ended(self, event: Event) -> None:
+        if self.display_state == OverlayDisplayState.VERIFYING:
+            self.display_state = OverlayDisplayState.LISTENING
+
+    async def _on_recovery_started(self, event: Event) -> None:
+        self.display_state = OverlayDisplayState.RECOVERING
+
+    async def _on_recovery_ended(self, event: Event) -> None:
+        if self.display_state == OverlayDisplayState.RECOVERING:
+            self.display_state = OverlayDisplayState.LISTENING
+
+    async def _on_clarification_requested(self, event: Event) -> None:
+        self.display_state = OverlayDisplayState.LISTENING
 
     async def _on_interrupted(self, event: Event) -> None:
         self.display_state = OverlayDisplayState.STOPPED

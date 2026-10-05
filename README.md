@@ -26,14 +26,16 @@ Instead of recording a complete turn, stopping, running speech-to-text, querying
 
 ## Current Status
 
-**Phase 6 — Unified Interruption and Cancellation System (Complete)**
+**Phase 7 & 8 — Context-Aware Planning, Incremental Execution, Verification & Bounded Recovery (Complete)**
 
-The agent's interruption and cancellation infrastructure is hardened with end-to-end propagation and race protection:
-* **Unified Cancellation Primitive (`app/agent/cancellation.py`)**: Thread-safe, async-friendly `CancellationToken` tracking active requests/runs (`run_id`), supporting registered cooperative cancellation callbacks and idempotency (safe for repeated triggers).
-* **Run Isolation & Stale Action Rejection (`app/agent/action.py`, `app/agent/action_queue.py`)**: `Action` models carry `run_id`. Stale actions from cancelled runs are automatically rejected upon submission, and `ActionQueue.clear_run(run_id)` discards queued actions without corrupting unrelated requests.
-* **Cancellation-Aware Executor (`app/agent/executor.py`)**: `ActionExecutor` checks token cancellation at operation boundaries and supports cooperative async task cancellation.
-* **Runtime Interruption Coordination (`app/agent/runtime.py`)**: Immediate interruption upon `interrupt()` or `INTERRUPT` intent events, cooperatively cancelling in-flight tasks, clearing pending queues, and discarding stale async results.
-* **Minimal Floating Overlay Controller (`app/agent/overlay.py`)**: Minimal display state tracking (`Listening`, `Thinking`, `Executing`, `Stopped`) with an immediate, non-blocking STOP control wired to the unified cancellation token.
+The agent acts as a continuous, context-aware computer operator with post-action verification and bounded recovery:
+* **Lightweight Task Context (`app/agent/context.py`)**: Bounded execution context tracking current run ID, original intent, current task objective, completed actions with structured outcomes (`ExecutionOutcome`, `ActionResult`), and observations between meaningful steps without unbounded memory growth.
+* **Context-Aware Deduplication (`app/agent/context.py`)**: Prevents re-executing already completed actions when streaming or multi-step models emit similar steps later.
+* **Pre-Execution Action Validation (`app/agent/validator.py`)**: Strict schema, parameter, and safety validation ensuring malformed or unsupported action fragments never reach OS-level executors.
+* **Post-Action Verification & Self-Correction Engine (`app/agent/verifier.py`)**: Verifies actual computer state changes following meaningful actions rather than fabricating success based on raw API return codes.
+* **Bounded Self-Correction Recovery (`app/agent/runtime.py`)**: Automatic, bounded recovery loop when verification fails, adapting recovery attempts up to configured step and run limits, with cancellation always taking precedence.
+* **Clarification Handling**: Concise clarification requests for ambiguous input, cleanly yielding control back to listening mode.
+* **Overlay Lifecycle Feedback (`app/agent/overlay.py`)**: Minimal top overlay states (`Listening`, `Thinking`, `Executing`, `Verifying`, `Recovering`, `Stopped`) with immediate, non-blocking STOP button responsiveness throughout all phases.
 
 ---
 

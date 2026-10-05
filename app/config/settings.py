@@ -38,6 +38,11 @@ class Settings(BaseSettings):
     stt_language: str = "en-US"
     stt_endpointing_ms: int = 500  # Silence wait time for provider-level endpointing
 
+    # Planning, Verification & Recovery Configuration (Phase 7-8)
+    max_recovery_attempts_per_step: int = 2
+    max_total_recoveries_per_run: int = 4
+    enable_post_action_verification: bool = True
+
 
 # Singleton instance for application-wide use
 settings = Settings()
