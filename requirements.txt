@@ -1,0 +1,5 @@
+# Core runtime dependencies
+pydantic-settings>=2.0.0
+
+# Development and testing
+pytest>=8.0.0
