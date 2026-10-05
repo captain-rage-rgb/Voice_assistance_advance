@@ -51,6 +51,23 @@ class ActionQueue:
                     return action
         return None
 
+    async def clear_run(self, run_id: str) -> List[Action]:
+        """
+        Discard and cancel all pending actions belonging to a specific run_id.
+        Prevents stale actions from old runs from executing.
+        """
+        async with self._condition:
+            cancelled = []
+            remaining = []
+            for action in self._pending:
+                if action.run_id == run_id and action.status == ActionStatus.PENDING:
+                    action.mark_cancelled()
+                    cancelled.append(action)
+                else:
+                    remaining.append(action)
+            self._pending = remaining
+            return cancelled
+
     async def clear_all(self) -> List[Action]:
         """
         Clear and cancel all pending actions.

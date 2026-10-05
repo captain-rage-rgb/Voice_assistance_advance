@@ -4,19 +4,21 @@ Decouples action execution logic from the core runtime.
 """
 
 import asyncio
-from typing import Any, Protocol
+from typing import Any, Optional, Protocol
 from app.agent.action import Action
+from app.agent.cancellation import CancellationToken
 
 
 class ActionExecutor(Protocol):
     """Protocol defining the executor interface."""
 
-    async def execute(self, action: Action) -> Any:
+    async def execute(self, action: Action, token: Optional[CancellationToken] = None) -> Any:
         """
-        Execute an action asynchronously.
+        Execute an action asynchronously with cancellation token checking.
 
         Args:
             action: The Action instance to execute.
+            token: Optional cancellation token for checking before/during execution.
 
         Returns:
             The result of the action execution.
@@ -39,12 +41,19 @@ class MockExecutor:
         self.default_delay = default_delay
         self.executed_actions: list[Action] = []
 
-    async def execute(self, action: Action) -> str:
+    async def execute(self, action: Action, token: Optional[CancellationToken] = None) -> str:
         """
-        Simulate action execution. Supports cooperative cancellation via asyncio.sleep.
+        Simulate action execution. Supports cooperative cancellation via asyncio.sleep
+        and CancellationToken checks at operation boundaries.
         """
+        if token and token.is_cancelled:
+            token.check_cancelled()
+
         # Cooperative cancellation check: asyncio.sleep raises CancelledError if task cancelled
         await asyncio.sleep(self.default_delay)
+
+        if token and token.is_cancelled:
+            token.check_cancelled()
 
         # Allow tests to trigger simulated failures via special argument
         if action.arguments.get("simulate_failure"):

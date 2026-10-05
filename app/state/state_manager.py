@@ -27,6 +27,8 @@ class AgentState:
     current_action: Optional[Action] = None
     pending_actions_count: int = 0
     is_execution_active: bool = False
+    # Runtime run tracking
+    current_run_id: Optional[str] = None
     cancellation_requested: bool = False
     last_error: Optional[str] = None
 
@@ -65,6 +67,10 @@ class StateManager:
     def set_pending_count(self, count: int) -> None:
         """Update count of pending actions in queue."""
         self._state.pending_actions_count = max(0, count)
+
+    def set_current_run_id(self, run_id: Optional[str]) -> None:
+        """Update active execution run ID."""
+        self._state.current_run_id = run_id
 
     def request_cancellation(self) -> None:
         """Record that cancellation has been requested."""

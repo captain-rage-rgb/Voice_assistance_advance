@@ -26,13 +26,14 @@ Instead of recording a complete turn, stopping, running speech-to-text, querying
 
 ## Current Status
 
-**Phase 5 — Incremental Intent Detection (Complete)**
+**Phase 6 — Unified Interruption and Cancellation System (Complete)**
 
-The incremental intent detection layer is implemented and connected to streaming speech transcripts:
-* **Structured Intent Model (`app/intelligence/intent.py`)**: Immutable `Intent` model with generic `IntentType` (`OPEN_APPLICATION`, `NAVIGATE`, `SEARCH`, `TYPE_TEXT`, `INTERRUPT`), structured parameters, source text, and confidence scores.
-* **Incremental Intent Detector (`app/intelligence/intent_detector.py`)**: Rule-based, low-latency parser that segments continuous speech along natural boundaries (`and`, `then`, `next`, `after that`), handles partial revisions, differentiates incomplete trailing clauses from actionable intents, and suppresses duplicate emissions.
-* **STT to Intent Integration (`app/intelligence/stt_manager.py`)**: Emits `INTENT_DETECTED` events as soon as a complete intent emerges from partial transcripts while speech is ongoing.
-* **Non-Executing Guarantee**: Intents represent structured meaning only—no operating system automation or real computer tools are invoked.
+The agent's interruption and cancellation infrastructure is hardened with end-to-end propagation and race protection:
+* **Unified Cancellation Primitive (`app/agent/cancellation.py`)**: Thread-safe, async-friendly `CancellationToken` tracking active requests/runs (`run_id`), supporting registered cooperative cancellation callbacks and idempotency (safe for repeated triggers).
+* **Run Isolation & Stale Action Rejection (`app/agent/action.py`, `app/agent/action_queue.py`)**: `Action` models carry `run_id`. Stale actions from cancelled runs are automatically rejected upon submission, and `ActionQueue.clear_run(run_id)` discards queued actions without corrupting unrelated requests.
+* **Cancellation-Aware Executor (`app/agent/executor.py`)**: `ActionExecutor` checks token cancellation at operation boundaries and supports cooperative async task cancellation.
+* **Runtime Interruption Coordination (`app/agent/runtime.py`)**: Immediate interruption upon `interrupt()` or `INTERRUPT` intent events, cooperatively cancelling in-flight tasks, clearing pending queues, and discarding stale async results.
+* **Minimal Floating Overlay Controller (`app/agent/overlay.py`)**: Minimal display state tracking (`Listening`, `Thinking`, `Executing`, `Stopped`) with an immediate, non-blocking STOP control wired to the unified cancellation token.
 
 ---
 

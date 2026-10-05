@@ -26,6 +26,7 @@ class Action:
     action_type: str
     arguments: Dict[str, Any] = field(default_factory=dict)
     action_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    run_id: Optional[str] = None
     priority: int = 0
     status: ActionStatus = ActionStatus.PENDING
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
