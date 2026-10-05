@@ -448,8 +448,12 @@ def test_pause_and_resume_preserves_task_context():
             assert context.is_paused is False
             assert context.resumed_from_milestone == "setup complete"
 
-            await asyncio.sleep(0.05)
-            # Action executes after resume
+            # Wait for execution and verification to complete after resume
+            for _ in range(10):
+                if a.status == ActionStatus.COMPLETED:
+                    break
+                await asyncio.sleep(0.03)
+
             assert a.status == ActionStatus.COMPLETED
         finally:
             await runtime.stop()
