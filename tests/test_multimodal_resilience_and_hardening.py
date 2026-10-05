@@ -318,7 +318,10 @@ def test_repeated_start_stop_soak_test():
             # Submit lightweight action
             act = Action("ping", {"cycle": cycle})
             await runtime.submit_action(act)
-            await asyncio.sleep(0.06)
+            for _ in range(20):
+                if act.status == ActionStatus.COMPLETED:
+                    break
+                await asyncio.sleep(0.01)
             assert act.status == ActionStatus.COMPLETED
 
             await runtime.stop()

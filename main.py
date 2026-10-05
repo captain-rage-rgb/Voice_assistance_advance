@@ -16,8 +16,21 @@ Supports:
 import argparse
 import asyncio
 import os
+import subprocess
 import sys
 from typing import Optional
+
+# Auto-re-exec with local virtualenv Python if launched from global Python
+_venv_python = os.path.normpath(
+    os.path.join(
+        os.path.dirname(__file__),
+        ".venv",
+        "Scripts",
+        "python.exe" if sys.platform == "win32" else "python",
+    )
+)
+if os.path.isfile(_venv_python) and os.path.normcase(sys.executable) != os.path.normcase(_venv_python):
+    sys.exit(subprocess.call([_venv_python] + sys.argv))
 
 from app.agent.action import Action
 from app.agent.events import Event, EventBus, EventType
