@@ -21,6 +21,7 @@ class OverlayDisplayState(str, Enum):
     EXECUTING = "Executing"
     VERIFYING = "Verifying"
     RECOVERING = "Recovering"
+    WAITING_FOR_CONFIRMATION = "Waiting for confirmation"
     PAUSED = "Paused"
     STOPPED = "Stopped"
 
@@ -72,6 +73,8 @@ class FloatingOverlay:
         self.event_bus.subscribe(EventType.TASK_RESUMED, self._on_task_resumed)
         self.event_bus.subscribe(EventType.MILESTONE_REACHED, self._on_milestone_reached)
         self.event_bus.subscribe(EventType.PROGRESS_UPDATE, self._on_progress_update)
+        self.event_bus.subscribe(EventType.CONFIRMATION_REQUESTED, self._on_confirmation_requested)
+        self.event_bus.subscribe(EventType.CONFIRMATION_RESOLVED, self._on_confirmation_resolved)
         self.event_bus.subscribe(EventType.USER_INTERRUPTED, self._on_interrupted)
 
     async def _on_audio_started(self, event: Event) -> None:
@@ -130,6 +133,15 @@ class FloatingOverlay:
         msg = event.payload.get("message")
         if msg:
             self.current_action_label = msg
+
+    async def _on_confirmation_requested(self, event: Event) -> None:
+        self.display_state = OverlayDisplayState.WAITING_FOR_CONFIRMATION
+        self.current_action_label = event.payload.get("prompt", "Confirmation required")
+
+    async def _on_confirmation_resolved(self, event: Event) -> None:
+        if self.display_state == OverlayDisplayState.WAITING_FOR_CONFIRMATION:
+            self.display_state = OverlayDisplayState.LISTENING
+            self.current_action_label = ""
 
     async def _on_interrupted(self, event: Event) -> None:
         self.display_state = OverlayDisplayState.STOPPED

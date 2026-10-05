@@ -89,17 +89,35 @@ class TaskContext:
     completed_actions: List[ActionResult] = field(default_factory=list)
     milestones: List[TaskMilestone] = field(default_factory=list)
     observations: List[Observation] = field(default_factory=list)
+    recent_visual_observations: List[Any] = field(default_factory=list)
     pending_work: List[str] = field(default_factory=list)
     recent_failures: List[str] = field(default_factory=list)
 
     # Conversational continuity & reference resolution
     reference_context: Dict[str, Any] = field(default_factory=dict)
 
+    # High-level goal orchestration (Phase 12)
+    active_goal: Optional[Any] = None
+
     # State tracking
     is_paused: bool = False
     resumed_from_milestone: Optional[str] = None
     recovery_count: int = 0
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+
+    @property
+    def latest_visual_observation(self) -> Optional[Any]:
+        """Return the most recent visual observation, if any."""
+        return self.recent_visual_observations[-1] if self.recent_visual_observations else None
+
+    def record_visual_observation(self, observation: Any, max_entries: int = 5) -> None:
+        """
+        Record a visual observation, strictly bounding memory and discarding obsolete ones.
+        Screenshots are never persisted indefinitely.
+        """
+        self.recent_visual_observations.append(observation)
+        if len(self.recent_visual_observations) > max_entries:
+            self.recent_visual_observations.pop(0)
 
     def record_completed_action(self, result: ActionResult) -> None:
         """Record completed action, update reference context, and prune history."""

@@ -13,20 +13,38 @@ from app.agent.context import ActionResult, ExecutionOutcome, Observation, TaskC
 from app.agent.events import Event, EventBus, EventType
 from app.agent.executor import ActionExecutor, MockExecutor
 from app.agent.health import HealthMonitor
+from app.agent.orchestration import (
+    ConfirmationManager,
+    ConfirmationRequest,
+    ConfirmationStatus,
+    GoalOrchestrator,
+    GoalStatus,
+    SubGoal,
+    TaskGoal,
+)
 from app.agent.run_manager import RunManager
 from app.agent.validator import ActionValidator
 from app.agent.verifier import Verifier
+from app.agent.visual import (
+    ComputerObservation,
+    TargetingConfidence,
+    TargetingResult,
+    UIElement,
+    UITargeter,
+    VisualVerifier,
+)
 from app.config.settings import settings
 from app.state.state_manager import AgentLifecycleState, StateManager
 
 
 class AgentRuntime:
     """
-    Asynchronous Core Agent Runtime (Phases 1-10).
+    Asynchronous Core Agent Runtime (Phases 1-12).
     Coordinates event dispatch, state transitions, action queueing,
     context-aware planning, post-action verification, bounded recovery,
     long-running task milestones, pause/resume, unified run management,
-    timeouts, error boundaries, and graceful shutdown.
+    timeouts, error boundaries, visual UI targeting, confirmation gates,
+    and high-level goal orchestration.
     """
 
     def __init__(
@@ -39,6 +57,10 @@ class AgentRuntime:
         verifier: Optional[Verifier] = None,
         run_manager: Optional[RunManager] = None,
         health_monitor: Optional[HealthMonitor] = None,
+        targeter: Optional[UITargeter] = None,
+        visual_verifier: Optional[VisualVerifier] = None,
+        confirmation_manager: Optional[ConfirmationManager] = None,
+        orchestrator: Optional[GoalOrchestrator] = None,
         logger: Optional[logging.Logger] = None,
     ) -> None:
         self.event_bus = event_bus or EventBus()
@@ -54,6 +76,13 @@ class AgentRuntime:
         )
         self.run_manager = run_manager or RunManager(logger=self.logger)
         self.health_monitor = health_monitor or HealthMonitor(logger=self.logger)
+        self.targeter = targeter or UITargeter(logger=self.logger)
+        self.visual_verifier = visual_verifier or VisualVerifier(logger=self.logger)
+        self.confirmation_manager = confirmation_manager or ConfirmationManager(logger=self.logger)
+        self.orchestrator = orchestrator or GoalOrchestrator(
+            confirmation_manager=self.confirmation_manager,
+            logger=self.logger,
+        )
 
         self._worker_task: Optional[asyncio.Task] = None
         self._current_executing_task: Optional[asyncio.Task] = None
@@ -218,6 +247,10 @@ class AgentRuntime:
         self.state_manager.request_cancellation()
         self._pause_event.clear()
 
+        # Invalidate any pending confirmation requests for active run (Phase 12)
+        if self.active_run_id:
+            self.confirmation_manager.invalidate_run(self.active_run_id)
+
         # Cancel active run centrally
         await self.run_manager.cancel_active_run(reason=reason)
 
@@ -232,6 +265,30 @@ class AgentRuntime:
         self.state_manager.set_pending_count(0)
         self.state_manager.set_current_run_id(None)
         await self.event_bus.publish(Event(EventType.USER_INTERRUPTED, {"reason": reason}))
+
+    async def confirm_action(self, confirmation_id: str, approved: bool, run_id: Optional[str] = None) -> bool:
+        """
+        Explicitly resolve a pending confirmation gate (Phase 12).
+        Validates run ID isolation to reject stale authorizations.
+        """
+        target_run_id = run_id or self.active_run_id
+        success, reason = self.confirmation_manager.resolve_confirmation(
+            confirmation_id=confirmation_id,
+            approved=approved,
+            caller_run_id=target_run_id,
+        )
+        await self.event_bus.publish(
+            Event(
+                EventType.CONFIRMATION_RESOLVED,
+                {
+                    "confirmation_id": confirmation_id,
+                    "approved": approved,
+                    "run_id": target_run_id,
+                    "reason": reason,
+                },
+            )
+        )
+        return success
 
     async def request_clarification(self, question: str, run_id: Optional[str] = None) -> None:
         """Ask a concise clarification to the user and return control to listening mode."""
@@ -261,6 +318,47 @@ class AgentRuntime:
         if intent_type == "INTERRUPT":
             await self.interrupt(reason="User barge-in: stop/cancel intent detected")
             return
+
+        # Status questions (Phase 12: "What are you doing?", "Where are you?", "What's left?", etc.)
+        status_triggers = ("STATUS_QUERY", "status_query", "STATUS", "status", "what are you doing", "where are you", "what's left", "did that work")
+        intent_lower = intent_type.lower()
+        if any(trigger in intent_lower for trigger in status_triggers) or arguments.get("is_status_query"):
+            goal = self.orchestrator.get_goal(self.active_run_id or "") if self.active_run_id else None
+            if goal:
+                status_summary = goal.get_status_summary()
+            elif self.active_run_id:
+                status_summary = f"I'm currently working on the active task."
+            else:
+                status_summary = "I'm currently idle and listening for your command."
+
+            self.logger.info("STATUS REQUESTED: %s", status_summary)
+            await self.event_bus.publish(
+                Event(EventType.STATUS_RESPONDED, {"run_id": self.active_run_id, "status": status_summary})
+            )
+            return
+
+        # Voice confirmation responses (Phase 12: "yes", "confirm", "proceed", "no", "deny")
+        if intent_lower in ("confirm", "approve", "yes", "proceed", "ok"):
+            cid = arguments.get("confirmation_id")
+            if not cid and self.active_run_id:
+                for pending_cid, req in list(self.confirmation_manager._pending_confirmations.items()):
+                    if req.run_id == self.active_run_id and req.status == ConfirmationStatus.PENDING:
+                        cid = pending_cid
+                        break
+            if cid:
+                await self.confirm_action(confirmation_id=cid, approved=True, run_id=self.active_run_id)
+                return
+
+        if intent_lower in ("deny", "reject", "no", "cancel_confirmation"):
+            cid = arguments.get("confirmation_id")
+            if not cid and self.active_run_id:
+                for pending_cid, req in list(self.confirmation_manager._pending_confirmations.items()):
+                    if req.run_id == self.active_run_id and req.status == ConfirmationStatus.PENDING:
+                        cid = pending_cid
+                        break
+            if cid:
+                await self.confirm_action(confirmation_id=cid, approved=False, run_id=self.active_run_id)
+                return
 
         # Pause and resume handling (Phase 9)
         if intent_type in ("PAUSE", "pause", "WAIT", "wait"):
@@ -311,8 +409,12 @@ class AgentRuntime:
                         arguments.update(resolved.get("arguments", {}))
                     elif "application" in resolved:
                         arguments["application"] = resolved["application"]
+                        arguments.pop("target", None)
+                        arguments.pop("reference", None)
                     elif "target_selector" in resolved:
                         arguments["selector"] = resolved["target_selector"]
+                        arguments.pop("target", None)
+                        arguments.pop("reference", None)
 
         action = Action(action_type=intent_type, arguments=arguments, priority=priority, run_id=token.run_id)
         self.logger.info("EVENT RECEIVED: Intent detected -> Created action %s (Run: %s)", action.action_type, action.run_id)
@@ -385,6 +487,144 @@ class AgentRuntime:
             )
             return
 
+        # Consequential action confirmation gate (Phase 12)
+        if settings.require_confirmation_for_consequential and self.confirmation_manager.is_consequential(action):
+            action_approved = False
+            for req in self.confirmation_manager._pending_confirmations.values():
+                if req.run_id == action.run_id and req.action.action_id == action.action_id and req.status == ConfirmationStatus.APPROVED:
+                    action_approved = True
+                    break
+
+            if not action_approved:
+                prompt = (
+                    action.arguments.get("confirmation_prompt")
+                    if isinstance(action.arguments, dict)
+                    else None
+                ) or f"Are you sure you want to execute '{action.action_type}'?"
+                req = self.confirmation_manager.request_confirmation(
+                    run_id=action.run_id,
+                    action=action,
+                    prompt=prompt,
+                    timeout_seconds=settings.consequential_action_timeout_seconds,
+                )
+                await self.event_bus.publish(
+                    Event(
+                        EventType.CONFIRMATION_REQUESTED,
+                        {
+                            "confirmation_id": req.confirmation_id,
+                            "run_id": action.run_id,
+                            "action_id": action.action_id,
+                            "action_type": action.action_type,
+                            "prompt": req.prompt,
+                        },
+                    )
+                )
+
+                # Bounded poll for confirmation resolution or timeout/cancellation
+                poll_interval = 0.05
+                waited = 0.0
+                while req.status == ConfirmationStatus.PENDING and waited < req.timeout_seconds:
+                    if (token and token.is_cancelled) or self.is_run_cancelled(action.run_id) or self._stop_event.is_set():
+                        req.status = ConfirmationStatus.CANCELLED
+                        break
+                    await asyncio.sleep(poll_interval)
+                    waited += poll_interval
+
+                if req.status != ConfirmationStatus.APPROVED:
+                    is_cancel = req.status == ConfirmationStatus.CANCELLED
+                    if is_cancel:
+                        action.mark_cancelled()
+                    else:
+                        action.mark_failed(f"Confirmation {req.status.value}")
+                    self.logger.info("CONSEQUENTIAL ACTION REJECTED/CANCELLED: %s (Status: %s)", action.action_type, req.status.value)
+                    await self.event_bus.publish(
+                        Event(
+                            EventType.ACTION_CANCELLED if is_cancel else EventType.ACTION_FAILED,
+                            {"action_id": action.action_id, "run_id": action.run_id, "reason": f"Confirmation {req.status.value}"},
+                        )
+                    )
+                    return
+
+        # Visual UI target resolution & coordinate fallback (Phase 11)
+        if isinstance(action.arguments, dict):
+            visual_actions = {"CLICK", "click", "HOVER", "hover", "FOCUS", "focus", "PRESS", "press"}
+            has_explicit_visual = "visual_target" in action.arguments or "selector" in action.arguments or action.arguments.get("requires_visual_target", False)
+            has_generic_target = "target" in action.arguments and action.action_type not in ("OPEN_APPLICATION", "open_application", "NAVIGATE", "navigate", "SEARCH", "search")
+
+            if (action.action_type in visual_actions or has_explicit_visual or has_generic_target) and "x" not in action.arguments and "y" not in action.arguments:
+                target_query = action.arguments.get("visual_target") or action.arguments.get("selector") or action.arguments.get("target")
+                if target_query:
+                    latest_obs: Optional[ComputerObservation] = context.latest_visual_observation
+                    if not latest_obs and "observation" in action.arguments:
+                        latest_obs = action.arguments["observation"]
+                        context.record_visual_observation(latest_obs)
+
+                if not latest_obs or latest_obs.is_stale(max_age_seconds=settings.observation_freshness_seconds):
+                    reason = "No visual observation available" if not latest_obs else f"Visual observation is stale ({latest_obs.age_seconds:.1f}s old)"
+                    self.logger.warning("VISUAL RESOLUTION REJECTED: %s for action %s", reason, action.action_type)
+                    await self.event_bus.publish(
+                        Event(EventType.VISUAL_OBSERVATION_STALE, {"action_id": action.action_id, "run_id": action.run_id, "reason": reason})
+                    )
+                    action.mark_failed(reason)
+                    await self.event_bus.publish(
+                        Event(EventType.ACTION_FAILED, {"action_id": action.action_id, "run_id": action.run_id, "error": reason})
+                    )
+                    return
+
+                target_res = self.targeter.resolve_target(
+                    target_query=str(target_query),
+                    observation=latest_obs,
+                    confidence_threshold=settings.visual_target_confidence_threshold,
+                    ambiguity_threshold=settings.visual_ambiguity_threshold,
+                    max_age_seconds=settings.observation_freshness_seconds,
+                )
+
+                if target_res.confidence == TargetingConfidence.AMBIGUOUS:
+                    self.logger.warning("TARGET AMBIGUOUS: %s for query '%s'", target_res.reason, target_query)
+                    await self.event_bus.publish(
+                        Event(
+                            EventType.VISUAL_TARGET_AMBIGUOUS,
+                            {
+                                "action_id": action.action_id,
+                                "run_id": action.run_id,
+                                "candidates": [c[0].label for c in target_res.candidates],
+                            },
+                        )
+                    )
+                    await self.request_clarification(target_res.clarification_question or "Target is ambiguous", run_id=action.run_id)
+                    action.mark_failed(target_res.reason)
+                    await self.event_bus.publish(
+                        Event(EventType.ACTION_FAILED, {"action_id": action.action_id, "run_id": action.run_id, "error": target_res.reason})
+                    )
+                    return
+
+                if not target_res.is_actionable:
+                    self.logger.warning("TARGET NOT RESOLVED: %s for query '%s'", target_res.reason, target_query)
+                    await self.request_clarification(target_res.clarification_question or "Target could not be identified", run_id=action.run_id)
+                    action.mark_failed(target_res.reason)
+                    await self.event_bus.publish(
+                        Event(EventType.ACTION_FAILED, {"action_id": action.action_id, "run_id": action.run_id, "error": target_res.reason})
+                    )
+                    return
+
+                # Target successfully resolved! Update action coordinates
+                elem = target_res.target_element
+                action.arguments["x"], action.arguments["y"] = elem.center_coords
+                action.arguments["resolved_element_id"] = elem.element_id
+                self.logger.info("VISUAL TARGET RESOLVED: '%s' -> %s at %s", target_query, elem.label, elem.center_coords)
+                await self.event_bus.publish(
+                    Event(
+                        EventType.VISUAL_TARGET_FOUND,
+                        {
+                            "action_id": action.action_id,
+                            "run_id": action.run_id,
+                            "element_id": elem.element_id,
+                            "label": elem.label,
+                            "center_coords": elem.center_coords,
+                        },
+                    )
+                )
+
         action.mark_running()
         self.state_manager.set_current_action(action)
         self.state_manager.set_pending_count(self.action_queue.pending_count)
@@ -400,6 +640,60 @@ class AgentRuntime:
             self._current_executing_task = asyncio.create_task(self.executor.execute(action, token=token))
             raw_result = await asyncio.wait_for(self._current_executing_task, timeout=settings.action_timeout_seconds)
             self._current_executing_task = None
+
+            # Visual verification & Dynamic replanning check (Phase 11 & 12)
+            if isinstance(action.arguments, dict):
+                expected_change = action.arguments.get("expected_change")
+                simulate_mismatch = action.arguments.get("simulate_visual_mismatch", False)
+                if expected_change or simulate_mismatch:
+                    obs_after = action.arguments.get("post_observation") or context.latest_visual_observation
+                    if simulate_mismatch or not obs_after:
+                        visual_ok = False
+                        visual_msg = "Simulated visual mismatch: UI did not transition to expected state"
+                    else:
+                        visual_ok, visual_msg = self.visual_verifier.verify_change(
+                            obs_before=context.latest_visual_observation,
+                            obs_after=obs_after,
+                            expected_change=expected_change or {},
+                        )
+
+                    if not visual_ok:
+                        self.logger.warning("VISUAL VERIFICATION FAILED: %s", visual_msg)
+                        await self.event_bus.publish(
+                            Event(EventType.VISUAL_VERIFICATION_FAILED, {"action_id": action.action_id, "run_id": action.run_id, "reason": visual_msg})
+                        )
+                        # Trigger dynamic replanning rather than blindly replaying original action
+                        await self.event_bus.publish(
+                            Event(EventType.REPLANNING_STARTED, {"action_id": action.action_id, "run_id": action.run_id, "reason": visual_msg})
+                        )
+                        replan_action = Action(
+                            action_type=action.arguments.get("replan_action_type", "OBSERVE_STATE"),
+                            arguments={"replanned_from": action.action_id, "reason": visual_msg},
+                            run_id=action.run_id,
+                        )
+                        goal = self.orchestrator.get_goal(action.run_id)
+                        if goal:
+                            active_sg = goal.get_active_subgoal()
+                            if active_sg:
+                                self.orchestrator.replan_subgoal(goal, active_sg, [replan_action], reason=visual_msg)
+
+                        await self.event_bus.publish(
+                            Event(EventType.REPLANNING_COMPLETED, {"action_id": action.action_id, "new_action_id": replan_action.action_id, "run_id": action.run_id})
+                        )
+                        action.mark_failed(f"Visual verification failed: {visual_msg}")
+                        result_record = ActionResult(
+                            action_id=action.action_id,
+                            action_type=action.action_type,
+                            outcome=ExecutionOutcome.VERIFICATION_FAILED,
+                            action_arguments=action.arguments,
+                            run_id=action.run_id,
+                            error=visual_msg,
+                        )
+                        context.record_completed_action(result_record)
+                        await self.event_bus.publish(
+                            Event(EventType.ACTION_FAILED, {"action_id": action.action_id, "run_id": action.run_id, "error": visual_msg})
+                        )
+                        return
 
             # Post-action verification for meaningful actions
             if settings.enable_post_action_verification and self.verifier.should_verify(action):
@@ -431,6 +725,7 @@ class AgentRuntime:
                         message=v_message,
                     )
                     context.record_completed_action(result_record)
+                    self._check_subgoal_advancement(action, result_record)
                     self.logger.info("ACTION COMPLETED & VERIFIED: %s", action.action_type)
                     await self.event_bus.publish(
                         Event(EventType.ACTION_COMPLETED, {"action_id": action.action_id, "run_id": action.run_id, "result": raw_result, "verified": True})
@@ -471,6 +766,7 @@ class AgentRuntime:
                     observation_before=obs_before,
                 )
                 context.record_completed_action(result_record)
+                self._check_subgoal_advancement(action, result_record)
                 self.logger.info("ACTION COMPLETED: %s (Result: %s)", action.action_type, raw_result)
                 await self.event_bus.publish(
                     Event(EventType.ACTION_COMPLETED, {"action_id": action.action_id, "run_id": action.run_id, "result": raw_result})
@@ -620,6 +916,7 @@ class AgentRuntime:
                     message=f"Recovered on attempt {attempts}",
                 )
                 context.record_completed_action(result_record)
+                self._check_subgoal_advancement(action, result_record)
                 await self.event_bus.publish(
                     Event(EventType.ACTION_COMPLETED, {"action_id": action.action_id, "run_id": action.run_id, "result": rec_res, "recovered": True})
                 )
@@ -632,3 +929,25 @@ class AgentRuntime:
             Event(EventType.RECOVERY_FAILED, {"action_id": action.action_id, "attempts": attempts, "run_id": action.run_id})
         )
         return False
+
+    def _check_subgoal_advancement(self, action: Action, result_record: ActionResult) -> None:
+        """Advance orchestrator sub-goal if this action completed an active sub-goal (Phase 12)."""
+        goal = self.orchestrator.get_goal(action.run_id)
+        if goal:
+            active_sg = goal.get_active_subgoal()
+            if active_sg and any(a.action_id == action.action_id for a in active_sg.actions):
+                if all(a.status == ActionStatus.COMPLETED for a in active_sg.actions):
+                    all_done = self.orchestrator.advance_subgoal_completion(goal, active_sg, result_record)
+                    asyncio.create_task(
+                        self.event_bus.publish(
+                            Event(
+                                EventType.SUBGOAL_COMPLETED,
+                                {
+                                    "subgoal_id": active_sg.subgoal_id,
+                                    "run_id": action.run_id,
+                                    "description": active_sg.description,
+                                    "goal_completed": all_done,
+                                },
+                            )
+                        )
+                    )

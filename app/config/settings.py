@@ -51,6 +51,17 @@ class Settings(BaseSettings):
     max_context_history_entries: int = 20
     enable_conversational_continuity: bool = True
 
+    # Visual Understanding & UI Targeting (Phase 11)
+    observation_freshness_seconds: float = 5.0
+    visual_target_confidence_threshold: float = 0.7
+    visual_ambiguity_threshold: float = 0.15
+    enable_accessibility_targeting: bool = True
+
+    # Safe High-Level Task Orchestration & Confirmations (Phase 12)
+    consequential_action_timeout_seconds: float = 30.0
+    max_subgoals_per_task: int = 10
+    require_confirmation_for_consequential: bool = True
+
 
 # Singleton instance for application-wide use
 settings = Settings()
