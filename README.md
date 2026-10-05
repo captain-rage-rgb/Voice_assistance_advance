@@ -26,15 +26,15 @@ Instead of recording a complete turn, stopping, running speech-to-text, querying
 
 ## Current Status
 
-**Phase 1 — Project Foundation**
+**Phase 2 — Core Agent Runtime (Complete)**
 
-The project foundation is initialized with:
-* Clean modular package layout (`app/` with component boundaries).
-* Configuration management powered by `pydantic-settings`.
-* Centralized logging setup.
-* Minimal application entry point (`main.py`).
-* Unit test suite using `pytest`.
-* Environment variable template (`.env.example`).
+The asynchronous agent runtime foundation is implemented:
+* **Event System (`app/agent/events.py`)**: Asynchronous publish-subscribe `EventBus` and generic immutable `Event` models.
+* **Action & Queue Model (`app/agent/action.py`, `app/agent/action_queue.py`)**: Structured `Action` representations and priority-ordered, inspectable, cancellable `ActionQueue`.
+* **State Management (`app/state/state_manager.py`)**: `StateManager` tracking lifecycle, current action, pending action counts, cancellation flags, and error states.
+* **Executor Interface & Mock (`app/agent/executor.py`)**: Decoupled `ActionExecutor` protocol with a `MockExecutor` simulating async delays, successes, and failures without touching actual OS automation.
+* **Core Agent Runtime (`app/agent/runtime.py`)**: Async orchestrator managing event dispatch, action queuing, cooperative in-flight task cancellation, and graceful shutdown.
+* **Demonstration Scenario (`app/agent/demo.py`)**: Runnable end-to-end simulation covering intent conversion, queueing, execution, interruption, and shutdown.
 
 ---
 
